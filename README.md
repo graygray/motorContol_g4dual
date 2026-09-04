@@ -5,6 +5,10 @@ controller. This first increment is a safe node template: it converts
 `geometry_msgs/msg/Twist` commands into left/right motor RPM targets and
 publishes them for inspection. It does **not** access CAN hardware yet.
 
+The repository also contains a transport-independent C++ CAN encoder matching
+the command payloads in `Test_H503RB/Core/Src/motor_can.c`. The encoder creates
+eight-byte standard-ID `0x601` frames but does not transmit them.
+
 ## Current ROS interface
 
 | Direction | Topic | Type | Purpose |
@@ -47,7 +51,7 @@ inversion against the real platform before any hardware transport is enabled.
 1. **ROS node template (this increment):** package/build metadata, launch and
    parameter files, `cmd_vel` input, differential-drive conversion, RPM clamp,
    and stale-command watchdog.
-2. **CAN protocol module:** encode the STM32-compatible classic CAN frames
+2. **CAN protocol module (complete):** encode the STM32-compatible classic CAN frames
    (`0x601` commands; `0x581`, `0x481`, and `0x381` feedback/fault frames),
    including signed RPM x10 encoding.
 3. **SocketCAN transport:** configurable interface (for example `can0`), RX/TX
@@ -66,6 +70,8 @@ inversion against the real platform before any hardware transport is enabled.
 | Path | Purpose |
 |---|---|
 | `include/motor_control_g4dual/` | Node declarations |
-| `src/` | ROS node implementation and executable entry point |
+| `src/motor_can_protocol.cpp` | ROS-independent `0x601` frame encoder |
+| `src/motor_control_node.cpp` | ROS node implementation |
+| `src/main.cpp` | ROS executable entry point |
 | `config/` | Runtime parameters |
 | `launch/` | ROS 2 launch description |

@@ -13,6 +13,15 @@ find_package(geometry_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 
+add_library(motor_can_protocol STATIC
+  src/motor_can_protocol.cpp
+)
+target_compile_features(motor_can_protocol PUBLIC cxx_std_17)
+target_include_directories(motor_can_protocol PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 add_executable(motor_control_node
   src/motor_control_node.cpp
   src/main.cpp
@@ -28,8 +37,11 @@ ament_target_dependencies(motor_control_node
   std_msgs
 )
 
-install(TARGETS motor_control_node
-  DESTINATION lib/${PROJECT_NAME}
+install(TARGETS motor_can_protocol motor_control_node
+  EXPORT export_motor_can_protocol
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY include/
   DESTINATION include
@@ -37,6 +49,9 @@ install(DIRECTORY include/
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}
 )
+
+ament_export_include_directories(include)
+ament_export_targets(export_motor_can_protocol HAS_LIBRARY_TARGET)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

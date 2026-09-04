@@ -10,6 +10,7 @@
 
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "motor_control_g4dual/differential_drive_kinematics.hpp"
 #include "motor_control_g4dual/socket_can_transport.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -94,6 +95,7 @@ private:
   double odom_y_m_{0.0};
   double odom_yaw_rad_{0.0};
   std::unique_ptr<SocketCanTransport> can_transport_;
+  std::unique_ptr<DifferentialDriveKinematics> kinematics_;
   std::optional<WheelSpeedsReply> latest_wheel_speeds_;
   std::optional<EncoderDeltasReply> latest_encoder_deltas_;
   std::optional<EncoderPositionReport> latest_encoder_positions_;

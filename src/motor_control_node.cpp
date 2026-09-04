@@ -3,10 +3,8 @@
 
 #include "motor_control_g4dual/motor_control_node.hpp"
 
-#include <algorithm>
 #include <cmath>
 #include <functional>
-#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -22,16 +20,6 @@ namespace
 {
 constexpr double kSecondsPerMinute = 60.0;
 constexpr double kTwoPi = 6.28318530717958647692;
-
-std::int64_t wrapped_encoder_delta(std::int32_t current, std::int32_t previous)
-{
-  const auto raw_delta = static_cast<std::uint32_t>(current) -
-    static_cast<std::uint32_t>(previous);
-  if (raw_delta <= static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
-    return static_cast<std::int64_t>(raw_delta);
-  }
-  return static_cast<std::int64_t>(raw_delta) - 0x100000000LL;
-}
 }
 
 MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
@@ -72,6 +60,9 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
 
   command_timeout_ = std::chrono::milliseconds(command_timeout_ms);
   feedback_timeout_ = std::chrono::milliseconds(feedback_timeout_ms);
+  kinematics_ = std::make_unique<DifferentialDriveKinematics>(
+    wheel_radius_m_, wheel_separation_m_, gear_ratio_, max_motor_speed_rpm_,
+    invert_left_motor_, invert_right_motor_);
 
   if (enable_can_) {
     can_transport_ = std::make_unique<SocketCanTransport>(can_interface_);
@@ -181,25 +172,9 @@ void MotorControlNode::control_callback()
     return;
   }
 
-  const double left_velocity_mps =
-    linear_velocity_mps_ - angular_velocity_radps_ * wheel_separation_m_ / 2.0;
-  const double right_velocity_mps =
-    linear_velocity_mps_ + angular_velocity_radps_ * wheel_separation_m_ / 2.0;
-  const double rpm_per_mps = gear_ratio_ * kSecondsPerMinute / (kTwoPi * wheel_radius_m_);
-
-  double left_rpm = std::clamp(
-    left_velocity_mps * rpm_per_mps, -max_motor_speed_rpm_, max_motor_speed_rpm_);
-  double right_rpm = std::clamp(
-    right_velocity_mps * rpm_per_mps, -max_motor_speed_rpm_, max_motor_speed_rpm_);
-
-  if (invert_left_motor_) {
-    left_rpm = -left_rpm;
-  }
-  if (invert_right_motor_) {
-    right_rpm = -right_rpm;
-  }
-
-  publish_motor_rpm(left_rpm, right_rpm);
+  const auto motor_rpm =
+    kinematics_->twist_to_motor_rpm(linear_velocity_mps_, angular_velocity_radps_);
+  publish_motor_rpm(motor_rpm.left, motor_rpm.right);
 }
 
 void MotorControlNode::publish_motor_rpm(double left_rpm, double right_rpm)
@@ -446,11 +421,11 @@ void MotorControlNode::latch_safety_stop(const char * reason)
 void MotorControlNode::publish_wheel_speeds(
   const WheelSpeedsReply & reply, const rclcpp::Time & stamp)
 {
-  const double left_rpm = invert_left_motor_ ? -reply.m1_speed_rpm : reply.m1_speed_rpm;
-  const double right_rpm = invert_right_motor_ ? -reply.m2_speed_rpm : reply.m2_speed_rpm;
+  const auto wheel_rpm =
+    kinematics_->motor_values_to_wheel(reply.m1_speed_rpm, reply.m2_speed_rpm);
 
   std_msgs::msg::Float64MultiArray speed_message;
-  speed_message.data = {left_rpm, right_rpm};
+  speed_message.data = {wheel_rpm.left, wheel_rpm.right};
   wheel_speed_publisher_->publish(std::move(speed_message));
 
   sensor_msgs::msg::JointState joint_message;
@@ -458,18 +433,19 @@ void MotorControlNode::publish_wheel_speeds(
   joint_message.name = {left_joint_name_, right_joint_name_};
   joint_message.position = {left_joint_position_rad_, right_joint_position_rad_};
   joint_message.velocity = {
-    left_rpm * kTwoPi / kSecondsPerMinute,
-    right_rpm * kTwoPi / kSecondsPerMinute};
+    wheel_rpm.left * kTwoPi / kSecondsPerMinute,
+    wheel_rpm.right * kTwoPi / kSecondsPerMinute};
   joint_state_publisher_->publish(std::move(joint_message));
 }
 
 void MotorControlNode::publish_encoder_deltas(const EncoderDeltasReply & reply)
 {
-  const std::int32_t left_delta = invert_left_motor_ ? -reply.m1_delta : reply.m1_delta;
-  const std::int32_t right_delta = invert_right_motor_ ? -reply.m2_delta : reply.m2_delta;
+  const auto wheel_delta = kinematics_->motor_values_to_wheel(reply.m1_delta, reply.m2_delta);
 
   std_msgs::msg::Int32MultiArray message;
-  message.data = {left_delta, right_delta};
+  message.data = {
+    static_cast<std::int32_t>(wheel_delta.left),
+    static_cast<std::int32_t>(wheel_delta.right)};
   encoder_delta_publisher_->publish(std::move(message));
 }
 
@@ -480,41 +456,38 @@ void MotorControlNode::update_encoder_odometry(
   if (!encoder_initialized_) {
     previous_m1_position_ = report.m1_position;
     previous_m2_position_ = report.m2_position;
-    const double m1_position = static_cast<double>(report.m1_position);
-    const double m2_position = static_cast<double>(report.m2_position);
-    left_joint_position_rad_ =
-      (invert_left_motor_ ? -m1_position : m1_position) * radians_per_count;
-    right_joint_position_rad_ =
-      (invert_right_motor_ ? -m2_position : m2_position) * radians_per_count;
+    const auto wheel_position = kinematics_->motor_values_to_wheel(
+      static_cast<double>(report.m1_position), static_cast<double>(report.m2_position));
+    left_joint_position_rad_ = wheel_position.left * radians_per_count;
+    right_joint_position_rad_ = wheel_position.right * radians_per_count;
     encoder_initialized_ = true;
   } else {
-    std::int64_t left_delta = wrapped_encoder_delta(report.m1_position, previous_m1_position_);
-    std::int64_t right_delta = wrapped_encoder_delta(report.m2_position, previous_m2_position_);
+    const auto m1_delta = DifferentialDriveKinematics::wrapped_encoder_delta(
+      report.m1_position, previous_m1_position_);
+    const auto m2_delta = DifferentialDriveKinematics::wrapped_encoder_delta(
+      report.m2_position, previous_m2_position_);
     previous_m1_position_ = report.m1_position;
     previous_m2_position_ = report.m2_position;
 
-    if (invert_left_motor_) {
-      left_delta = -left_delta;
-    }
-    if (invert_right_motor_) {
-      right_delta = -right_delta;
-    }
+    const auto wheel_delta = kinematics_->motor_values_to_wheel(
+      static_cast<double>(m1_delta), static_cast<double>(m2_delta));
 
     const double maximum_plausible_delta =
       MotorCanProtocol::kMaxSpeedRpm * MotorCanProtocol::kEncoderCountsPerRevolution *
       static_cast<double>(feedback_timeout_.count()) / 60000.0 * 2.0;
-    if (std::abs(static_cast<double>(left_delta)) > maximum_plausible_delta ||
-      std::abs(static_cast<double>(right_delta)) > maximum_plausible_delta)
+    if (std::abs(wheel_delta.left) > maximum_plausible_delta ||
+      std::abs(wheel_delta.right) > maximum_plausible_delta)
     {
       RCLCPP_WARN(
         get_logger(),
         "Rebasing after implausible encoder jump (left=%lld, right=%lld counts)",
-        static_cast<long long>(left_delta), static_cast<long long>(right_delta));
+        static_cast<long long>(wheel_delta.left),
+        static_cast<long long>(wheel_delta.right));
       return;
     }
 
-    const double left_delta_rad = static_cast<double>(left_delta) * radians_per_count;
-    const double right_delta_rad = static_cast<double>(right_delta) * radians_per_count;
+    const double left_delta_rad = wheel_delta.left * radians_per_count;
+    const double right_delta_rad = wheel_delta.right * radians_per_count;
     left_joint_position_rad_ += left_delta_rad;
     right_joint_position_rad_ += right_delta_rad;
 
@@ -528,14 +501,15 @@ void MotorControlNode::update_encoder_odometry(
       std::sin(odom_yaw_rad_ + yaw_delta), std::cos(odom_yaw_rad_ + yaw_delta));
   }
 
-  const double left_rpm = latest_wheel_speeds_ ?
-    (invert_left_motor_ ? -latest_wheel_speeds_->m1_speed_rpm :
-    latest_wheel_speeds_->m1_speed_rpm) : 0.0;
-  const double right_rpm = latest_wheel_speeds_ ?
-    (invert_right_motor_ ? -latest_wheel_speeds_->m2_speed_rpm :
-    latest_wheel_speeds_->m2_speed_rpm) : 0.0;
-  const double left_velocity_mps = left_rpm * kTwoPi * wheel_radius_m_ / kSecondsPerMinute;
-  const double right_velocity_mps = right_rpm * kTwoPi * wheel_radius_m_ / kSecondsPerMinute;
+  WheelPair wheel_rpm;
+  if (latest_wheel_speeds_) {
+    wheel_rpm = kinematics_->motor_values_to_wheel(
+      latest_wheel_speeds_->m1_speed_rpm, latest_wheel_speeds_->m2_speed_rpm);
+  }
+  const double left_velocity_mps =
+    wheel_rpm.left * kTwoPi * wheel_radius_m_ / kSecondsPerMinute;
+  const double right_velocity_mps =
+    wheel_rpm.right * kTwoPi * wheel_radius_m_ / kSecondsPerMinute;
 
   nav_msgs::msg::Odometry odometry;
   odometry.header.stamp = stamp;
@@ -563,8 +537,8 @@ void MotorControlNode::update_encoder_odometry(
   joint_message.name = {left_joint_name_, right_joint_name_};
   joint_message.position = {left_joint_position_rad_, right_joint_position_rad_};
   joint_message.velocity = {
-    left_rpm * kTwoPi / kSecondsPerMinute,
-    right_rpm * kTwoPi / kSecondsPerMinute};
+    wheel_rpm.left * kTwoPi / kSecondsPerMinute,
+    wheel_rpm.right * kTwoPi / kSecondsPerMinute};
   joint_state_publisher_->publish(std::move(joint_message));
 
   if (transform_broadcaster_) {

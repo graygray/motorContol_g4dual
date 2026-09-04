@@ -86,6 +86,33 @@ ros2 topic echo /motor_rpm_command
 Confirm `wheel_radius_m`, `wheel_separation_m`, `gear_ratio`, and motor
 inversion against the real platform before any hardware transport is enabled.
 
+## Tests
+
+The normal test run covers differential-drive conversion, proportional RPM
+limiting, direction inversion, encoder rollover, CAN command encoding, reply
+decoding, and malformed-frame rejection:
+
+```bash
+colcon test --packages-select motor_control_g4dual
+colcon test-result --verbose
+```
+
+The SocketCAN integration test is built on Linux but skips unless a test
+interface is explicitly selected. To run it on `vcan0`:
+
+```bash
+sudo modprobe vcan
+sudo ip link add dev vcan0 type vcan
+sudo ip link set dev vcan0 up
+MOTOR_CONTROL_VCAN_INTERFACE=vcan0 \
+  colcon test --packages-select motor_control_g4dual
+colcon test-result --verbose
+```
+
+Create `vcan0` only if it does not already exist. The integration test verifies
+an encoded `0x601` transmission through the kernel and injects a `0x581` reply
+back through the filtered receive and decode path. It never enables motors.
+
 ## Implementation plan
 
 1. **ROS node template (this increment):** package/build metadata, launch and
@@ -106,8 +133,9 @@ inversion against the real platform before any hardware transport is enabled.
 6. **Feedback and odometry (complete):** publish measured wheel speed, encoder
    deltas, faults, diagnostics, joint states, odometry, and optional odometry TF
    with consistent wheel-side sign and unit conventions.
-7. **Verification:** unit tests for kinematics and byte encoding, virtual-CAN
-   integration tests, then guarded bench testing with wheels off the ground.
+7. **Verification suite (complete):** unit tests for kinematics and byte
+   encoding plus an opt-in kernel `vcan` RX/TX integration test. Execution on a
+   ROS 2 Humble Linux host and guarded bench testing remain deployment steps.
 
 ## Repository layout
 
@@ -120,3 +148,4 @@ inversion against the real platform before any hardware transport is enabled.
 | `src/main.cpp` | ROS executable entry point |
 | `config/` | Runtime parameters |
 | `launch/` | ROS 2 launch description |
+| `test/` | Kinematics, protocol, and opt-in SocketCAN integration tests |

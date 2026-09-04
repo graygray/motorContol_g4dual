@@ -6,9 +6,14 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
+#include "diagnostic_msgs/msg/diagnostic_status.hpp"
+#include "diagnostic_msgs/msg/key_value.hpp"
+#include "geometry_msgs/msg/transform_stamped.hpp"
 #include "motor_control_g4dual/motor_can_protocol.hpp"
 
 namespace motor_control_g4dual
@@ -17,6 +22,16 @@ namespace
 {
 constexpr double kSecondsPerMinute = 60.0;
 constexpr double kTwoPi = 6.28318530717958647692;
+
+std::int64_t wrapped_encoder_delta(std::int32_t current, std::int32_t previous)
+{
+  const auto raw_delta = static_cast<std::uint32_t>(current) -
+    static_cast<std::uint32_t>(previous);
+  if (raw_delta <= static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
+    return static_cast<std::int64_t>(raw_delta);
+  }
+  return static_cast<std::int64_t>(raw_delta) - 0x100000000LL;
+}
 }
 
 MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
@@ -27,7 +42,12 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
   command_topic_ = declare_parameter<std::string>("command_topic", "cmd_vel");
   motor_rpm_topic_ = declare_parameter<std::string>("motor_rpm_topic", "motor_rpm_command");
   can_interface_ = declare_parameter<std::string>("can_interface", "can0");
+  odom_frame_id_ = declare_parameter<std::string>("odom_frame_id", "odom");
+  base_frame_id_ = declare_parameter<std::string>("base_frame_id", "base_link");
+  left_joint_name_ = declare_parameter<std::string>("left_joint_name", "left_wheel_joint");
+  right_joint_name_ = declare_parameter<std::string>("right_joint_name", "right_wheel_joint");
   enable_can_ = declare_parameter<bool>("enable_can", false);
+  publish_odom_tf_ = declare_parameter<bool>("publish_odom_tf", true);
   wheel_radius_m_ = declare_parameter<double>("wheel_radius_m", 0.1);
   wheel_separation_m_ = declare_parameter<double>("wheel_separation_m", 0.5);
   gear_ratio_ = declare_parameter<double>("gear_ratio", 1.0);
@@ -69,12 +89,27 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
   }
 
   motor_rpm_publisher_ = create_publisher<std_msgs::msg::Float64MultiArray>(motor_rpm_topic_, 10);
+  wheel_speed_publisher_ =
+    create_publisher<std_msgs::msg::Float64MultiArray>("wheel_speed_feedback", 10);
+  encoder_delta_publisher_ =
+    create_publisher<std_msgs::msg::Int32MultiArray>("encoder_delta_feedback", 10);
+  motor_fault_publisher_ =
+    create_publisher<std_msgs::msg::UInt32MultiArray>("motor_fault", 10);
+  joint_state_publisher_ = create_publisher<sensor_msgs::msg::JointState>("joint_states", 10);
+  odometry_publisher_ = create_publisher<nav_msgs::msg::Odometry>("odom", 10);
+  diagnostics_publisher_ =
+    create_publisher<diagnostic_msgs::msg::DiagnosticArray>("diagnostics", 10);
+  if (publish_odom_tf_) {
+    transform_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+  }
   command_subscription_ = create_subscription<geometry_msgs::msg::Twist>(
     command_topic_, 10,
     std::bind(&MotorControlNode::command_callback, this, std::placeholders::_1));
   control_timer_ = create_wall_timer(
     std::chrono::milliseconds(control_period_ms),
     std::bind(&MotorControlNode::control_callback, this));
+  diagnostics_timer_ = create_wall_timer(
+    std::chrono::seconds(1), std::bind(&MotorControlNode::publish_diagnostics, this));
   enable_service_ = create_service<std_srvs::srv::Trigger>(
     "enable_motors",
     std::bind(
@@ -218,6 +253,7 @@ void MotorControlNode::receive_can_frames()
       continue;
     }
 
+    const auto stamp = now();
     if (const auto * reply = std::get_if<FirmwareReply>(&*decoded.message)) {
       RCLCPP_INFO(
         get_logger(), "Motor-controller firmware identifier: %s",
@@ -225,11 +261,18 @@ void MotorControlNode::receive_can_frames()
     } else if (const auto * reply = std::get_if<WheelSpeedsReply>(&*decoded.message)) {
       latest_wheel_speeds_ = *reply;
       last_feedback_time_ = std::chrono::steady_clock::now();
+      feedback_received_ = true;
+      publish_wheel_speeds(*reply, stamp);
     } else if (const auto * reply = std::get_if<EncoderDeltasReply>(&*decoded.message)) {
       latest_encoder_deltas_ = *reply;
+      last_feedback_time_ = std::chrono::steady_clock::now();
+      feedback_received_ = true;
+      publish_encoder_deltas(*reply);
     } else if (const auto * report = std::get_if<EncoderPositionReport>(&*decoded.message)) {
       latest_encoder_positions_ = *report;
       last_feedback_time_ = std::chrono::steady_clock::now();
+      feedback_received_ = true;
+      update_encoder_odometry(*report, stamp);
     } else if (const auto * report = std::get_if<MotorFaultReport>(&*decoded.message)) {
       latest_motor_fault_ = *report;
       fault_latched_ = true;
@@ -238,6 +281,8 @@ void MotorControlNode::receive_can_frames()
         static_cast<unsigned int>(report->motor),
         static_cast<unsigned int>(report->fault_mask));
       latch_safety_stop("motor fault report");
+      publish_motor_fault(*report);
+      publish_diagnostics();
     }
   }
 
@@ -378,6 +423,7 @@ void MotorControlNode::check_feedback_timeout(std::chrono::steady_clock::time_po
   feedback_timeout_latched_ = true;
   RCLCPP_ERROR(get_logger(), "Motor feedback timed out; latching an emergency stop");
   latch_safety_stop("feedback timeout");
+  publish_diagnostics();
 }
 
 void MotorControlNode::latch_safety_stop(const char * reason)
@@ -395,6 +441,204 @@ void MotorControlNode::latch_safety_stop(const char * reason)
       get_logger(), "Failed to transmit emergency stop after %s: %s", reason,
       error_message.c_str());
   }
+}
+
+void MotorControlNode::publish_wheel_speeds(
+  const WheelSpeedsReply & reply, const rclcpp::Time & stamp)
+{
+  const double left_rpm = invert_left_motor_ ? -reply.m1_speed_rpm : reply.m1_speed_rpm;
+  const double right_rpm = invert_right_motor_ ? -reply.m2_speed_rpm : reply.m2_speed_rpm;
+
+  std_msgs::msg::Float64MultiArray speed_message;
+  speed_message.data = {left_rpm, right_rpm};
+  wheel_speed_publisher_->publish(std::move(speed_message));
+
+  sensor_msgs::msg::JointState joint_message;
+  joint_message.header.stamp = stamp;
+  joint_message.name = {left_joint_name_, right_joint_name_};
+  joint_message.position = {left_joint_position_rad_, right_joint_position_rad_};
+  joint_message.velocity = {
+    left_rpm * kTwoPi / kSecondsPerMinute,
+    right_rpm * kTwoPi / kSecondsPerMinute};
+  joint_state_publisher_->publish(std::move(joint_message));
+}
+
+void MotorControlNode::publish_encoder_deltas(const EncoderDeltasReply & reply)
+{
+  const std::int32_t left_delta = invert_left_motor_ ? -reply.m1_delta : reply.m1_delta;
+  const std::int32_t right_delta = invert_right_motor_ ? -reply.m2_delta : reply.m2_delta;
+
+  std_msgs::msg::Int32MultiArray message;
+  message.data = {left_delta, right_delta};
+  encoder_delta_publisher_->publish(std::move(message));
+}
+
+void MotorControlNode::update_encoder_odometry(
+  const EncoderPositionReport & report, const rclcpp::Time & stamp)
+{
+  const double radians_per_count = kTwoPi / MotorCanProtocol::kEncoderCountsPerRevolution;
+  if (!encoder_initialized_) {
+    previous_m1_position_ = report.m1_position;
+    previous_m2_position_ = report.m2_position;
+    const double m1_position = static_cast<double>(report.m1_position);
+    const double m2_position = static_cast<double>(report.m2_position);
+    left_joint_position_rad_ =
+      (invert_left_motor_ ? -m1_position : m1_position) * radians_per_count;
+    right_joint_position_rad_ =
+      (invert_right_motor_ ? -m2_position : m2_position) * radians_per_count;
+    encoder_initialized_ = true;
+  } else {
+    std::int64_t left_delta = wrapped_encoder_delta(report.m1_position, previous_m1_position_);
+    std::int64_t right_delta = wrapped_encoder_delta(report.m2_position, previous_m2_position_);
+    previous_m1_position_ = report.m1_position;
+    previous_m2_position_ = report.m2_position;
+
+    if (invert_left_motor_) {
+      left_delta = -left_delta;
+    }
+    if (invert_right_motor_) {
+      right_delta = -right_delta;
+    }
+
+    const double maximum_plausible_delta =
+      MotorCanProtocol::kMaxSpeedRpm * MotorCanProtocol::kEncoderCountsPerRevolution *
+      static_cast<double>(feedback_timeout_.count()) / 60000.0 * 2.0;
+    if (std::abs(static_cast<double>(left_delta)) > maximum_plausible_delta ||
+      std::abs(static_cast<double>(right_delta)) > maximum_plausible_delta)
+    {
+      RCLCPP_WARN(
+        get_logger(),
+        "Rebasing after implausible encoder jump (left=%lld, right=%lld counts)",
+        static_cast<long long>(left_delta), static_cast<long long>(right_delta));
+      return;
+    }
+
+    const double left_delta_rad = static_cast<double>(left_delta) * radians_per_count;
+    const double right_delta_rad = static_cast<double>(right_delta) * radians_per_count;
+    left_joint_position_rad_ += left_delta_rad;
+    right_joint_position_rad_ += right_delta_rad;
+
+    const double left_distance_m = left_delta_rad * wheel_radius_m_;
+    const double right_distance_m = right_delta_rad * wheel_radius_m_;
+    const double distance_m = (left_distance_m + right_distance_m) / 2.0;
+    const double yaw_delta = (right_distance_m - left_distance_m) / wheel_separation_m_;
+    odom_x_m_ += distance_m * std::cos(odom_yaw_rad_ + yaw_delta / 2.0);
+    odom_y_m_ += distance_m * std::sin(odom_yaw_rad_ + yaw_delta / 2.0);
+    odom_yaw_rad_ = std::atan2(
+      std::sin(odom_yaw_rad_ + yaw_delta), std::cos(odom_yaw_rad_ + yaw_delta));
+  }
+
+  const double left_rpm = latest_wheel_speeds_ ?
+    (invert_left_motor_ ? -latest_wheel_speeds_->m1_speed_rpm :
+    latest_wheel_speeds_->m1_speed_rpm) : 0.0;
+  const double right_rpm = latest_wheel_speeds_ ?
+    (invert_right_motor_ ? -latest_wheel_speeds_->m2_speed_rpm :
+    latest_wheel_speeds_->m2_speed_rpm) : 0.0;
+  const double left_velocity_mps = left_rpm * kTwoPi * wheel_radius_m_ / kSecondsPerMinute;
+  const double right_velocity_mps = right_rpm * kTwoPi * wheel_radius_m_ / kSecondsPerMinute;
+
+  nav_msgs::msg::Odometry odometry;
+  odometry.header.stamp = stamp;
+  odometry.header.frame_id = odom_frame_id_;
+  odometry.child_frame_id = base_frame_id_;
+  odometry.pose.pose.position.x = odom_x_m_;
+  odometry.pose.pose.position.y = odom_y_m_;
+  odometry.pose.pose.orientation.z = std::sin(odom_yaw_rad_ / 2.0);
+  odometry.pose.pose.orientation.w = std::cos(odom_yaw_rad_ / 2.0);
+  odometry.twist.twist.linear.x = (left_velocity_mps + right_velocity_mps) / 2.0;
+  odometry.twist.twist.angular.z =
+    (right_velocity_mps - left_velocity_mps) / wheel_separation_m_;
+  odometry.pose.covariance.fill(0.0);
+  odometry.pose.covariance[0] = 0.01;
+  odometry.pose.covariance[7] = 0.01;
+  odometry.pose.covariance[14] = 1000000.0;
+  odometry.pose.covariance[21] = 1000000.0;
+  odometry.pose.covariance[28] = 1000000.0;
+  odometry.pose.covariance[35] = 0.05;
+  odometry.twist.covariance = odometry.pose.covariance;
+  odometry_publisher_->publish(odometry);
+
+  sensor_msgs::msg::JointState joint_message;
+  joint_message.header.stamp = stamp;
+  joint_message.name = {left_joint_name_, right_joint_name_};
+  joint_message.position = {left_joint_position_rad_, right_joint_position_rad_};
+  joint_message.velocity = {
+    left_rpm * kTwoPi / kSecondsPerMinute,
+    right_rpm * kTwoPi / kSecondsPerMinute};
+  joint_state_publisher_->publish(std::move(joint_message));
+
+  if (transform_broadcaster_) {
+    geometry_msgs::msg::TransformStamped transform;
+    transform.header = odometry.header;
+    transform.child_frame_id = base_frame_id_;
+    transform.transform.translation.x = odom_x_m_;
+    transform.transform.translation.y = odom_y_m_;
+    transform.transform.rotation = odometry.pose.pose.orientation;
+    transform_broadcaster_->sendTransform(transform);
+  }
+}
+
+void MotorControlNode::publish_motor_fault(const MotorFaultReport & report)
+{
+  std_msgs::msg::UInt32MultiArray message;
+  message.data = {
+    static_cast<std::uint32_t>(report.motor),
+    static_cast<std::uint32_t>(report.fault_mask)};
+  motor_fault_publisher_->publish(std::move(message));
+}
+
+void MotorControlNode::publish_diagnostics()
+{
+  diagnostic_msgs::msg::DiagnosticArray array;
+  array.header.stamp = now();
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = get_fully_qualified_name() + std::string(": motor controller");
+  status.hardware_id = can_interface_;
+
+  if (fault_latched_) {
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+    status.message = "Motor fault latched";
+  } else if (feedback_timeout_latched_) {
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+    status.message = "Motor feedback timeout latched";
+  } else if (!enable_can_) {
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+    status.message = "Dry-run mode; SocketCAN disabled";
+  } else if (!motion_commands_enabled_) {
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+    status.message = "Motor commands safely gated";
+  } else {
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+    status.message = "Motor control enabled";
+  }
+
+  const auto add_value =
+    [&status](const std::string & key, const std::string & value) {
+      diagnostic_msgs::msg::KeyValue item;
+      item.key = key;
+      item.value = value;
+      status.values.push_back(std::move(item));
+    };
+  add_value("can_interface", can_interface_);
+  add_value("can_enabled", enable_can_ ? "true" : "false");
+  add_value("motion_commands_enabled", motion_commands_enabled_ ? "true" : "false");
+  add_value("feedback_received", feedback_received_ ? "true" : "false");
+  add_value("fault_latched", fault_latched_ ? "true" : "false");
+  add_value("feedback_timeout_latched", feedback_timeout_latched_ ? "true" : "false");
+  if (feedback_received_) {
+    const auto feedback_age = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - last_feedback_time_);
+    add_value("feedback_age_ms", std::to_string(feedback_age.count()));
+  } else {
+    add_value("feedback_age_ms", "never");
+  }
+  if (latest_motor_fault_) {
+    add_value("fault_motor", std::to_string(static_cast<unsigned int>(latest_motor_fault_->motor)));
+    add_value("fault_mask", std::to_string(latest_motor_fault_->fault_mask));
+  }
+
+  array.status.push_back(std::move(status));
+  diagnostics_publisher_->publish(std::move(array));
 }
 
 }  // namespace motor_control_g4dual

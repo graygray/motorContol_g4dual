@@ -9,6 +9,11 @@ motor_control:
     can_interface: can0
     can_receive_poll_ms: 10
     feedback_timeout_ms: 500
+    odom_frame_id: odom
+    base_frame_id: base_link
+    left_joint_name: left_wheel_joint
+    right_joint_name: right_wheel_joint
+    publish_odom_tf: true
     wheel_radius_m: 0.1
     wheel_separation_m: 0.5
     gear_ratio: 1.0

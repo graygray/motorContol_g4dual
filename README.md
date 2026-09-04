@@ -19,6 +19,12 @@ encoder positions (`0x481`), and motor-fault reports (`0x381`).
 |---|---|---|---|
 | Subscribe | `cmd_vel` | `geometry_msgs/msg/Twist` | Linear-x and angular-z drive command |
 | Publish | `motor_rpm_command` | `std_msgs/msg/Float64MultiArray` | Dry-run `[left_rpm, right_rpm]` target |
+| Publish | `wheel_speed_feedback` | `std_msgs/msg/Float64MultiArray` | Measured `[left_rpm, right_rpm]` |
+| Publish | `encoder_delta_feedback` | `std_msgs/msg/Int32MultiArray` | Raw 50 ms `[left, right]` encoder deltas |
+| Publish | `motor_fault` | `std_msgs/msg/UInt32MultiArray` | `[motor_selector, fault_mask]` |
+| Publish | `joint_states` | `sensor_msgs/msg/JointState` | Wheel position and angular velocity |
+| Publish | `odom` | `nav_msgs/msg/Odometry` | Differential-drive wheel odometry |
+| Publish | `diagnostics` | `diagnostic_msgs/msg/DiagnosticArray` | CAN and safety state |
 
 | Service | Type | Purpose |
 |---|---|---|
@@ -39,6 +45,9 @@ default 135 RPM limit and 50 ms control period match the current
 | `can_interface` | `can0` | Linux SocketCAN network-interface name |
 | `can_receive_poll_ms` | `10` | Interval used to drain received CAN frames |
 | `feedback_timeout_ms` | `500` | Enabled-motion timeout for speed/position feedback |
+| `odom_frame_id` / `base_frame_id` | `odom` / `base_link` | Odometry frame names |
+| `left_joint_name` / `right_joint_name` | wheel joint names | Joint-state names |
+| `publish_odom_tf` | `true` | Broadcast the `odom` to `base_link` transform |
 
 SocketCAN support requires Linux. If CAN is explicitly enabled and the named
 interface cannot be opened, node startup fails instead of silently continuing
@@ -46,6 +55,12 @@ in dry-run mode. Physical speed commands remain gated until `enable_motors`
 succeeds. A motor-fault report or feedback timeout closes that gate and sends
 an immediate emergency-stop command. Shutdown sends zero RPM and then stop
 before closing the CAN socket.
+
+The upper layer maps Motor 1 to the left wheel and Motor 2 to the right wheel.
+Direction inversion is applied consistently to commands, feedback, joint
+states, and odometry. Absolute `0x481` positions are treated as wheel-side
+quadrature counts at 16,384 counts/revolution; command-side `gear_ratio` is not
+applied to encoder feedback.
 
 ## Build and run (ROS 2 Humble)
 
@@ -88,9 +103,9 @@ inversion against the real platform before any hardware transport is enabled.
 5. **Lifecycle and safety (complete):** explicit enable/stop/reset services,
    emergency-stop behavior, feedback timeout, command gating, fault latching,
    and safe shutdown that requests zero speed before stopping the drive.
-6. **Feedback and odometry:** publish measured wheel speed, encoder deltas,
-   faults, diagnostics, joint states, and odometry with verified sign and unit
-   conventions.
+6. **Feedback and odometry (complete):** publish measured wheel speed, encoder
+   deltas, faults, diagnostics, joint states, odometry, and optional odometry TF
+   with consistent wheel-side sign and unit conventions.
 7. **Verification:** unit tests for kinematics and byte encoding, virtual-CAN
    integration tests, then guarded bench testing with wheels off the ground.
 

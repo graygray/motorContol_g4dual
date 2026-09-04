@@ -9,10 +9,14 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(Threads REQUIRED)
 
 add_library(motor_can_protocol STATIC
@@ -48,10 +52,14 @@ target_link_libraries(motor_control_node
   socket_can_transport
 )
 ament_target_dependencies(motor_control_node
+  diagnostic_msgs
   geometry_msgs
+  nav_msgs
   rclcpp
+  sensor_msgs
   std_msgs
   std_srvs
+  tf2_ros
 )
 
 install(TARGETS motor_can_protocol socket_can_transport motor_control_node

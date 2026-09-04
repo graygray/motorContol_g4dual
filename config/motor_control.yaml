@@ -1,0 +1,15 @@
+# Copyright 2026 Gray Lin
+# SPDX-License-Identifier: MIT
+
+motor_control:
+  ros__parameters:
+    command_topic: cmd_vel
+    motor_rpm_topic: motor_rpm_command
+    wheel_radius_m: 0.1
+    wheel_separation_m: 0.5
+    gear_ratio: 1.0
+    max_motor_speed_rpm: 135.0
+    invert_left_motor: false
+    invert_right_motor: false
+    command_timeout_ms: 500
+    control_period_ms: 50

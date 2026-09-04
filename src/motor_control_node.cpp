@@ -1,0 +1,116 @@
+// Copyright 2026 Gray Lin
+// SPDX-License-Identifier: MIT
+
+#include "motor_control_g4dual/motor_control_node.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <functional>
+#include <stdexcept>
+#include <utility>
+
+namespace motor_control_g4dual
+{
+namespace
+{
+constexpr double kSecondsPerMinute = 60.0;
+constexpr double kTwoPi = 6.28318530717958647692;
+}
+
+MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
+: Node("motor_control", options),
+  last_command_time_(std::chrono::steady_clock::now())
+{
+  command_topic_ = declare_parameter<std::string>("command_topic", "cmd_vel");
+  motor_rpm_topic_ = declare_parameter<std::string>("motor_rpm_topic", "motor_rpm_command");
+  wheel_radius_m_ = declare_parameter<double>("wheel_radius_m", 0.1);
+  wheel_separation_m_ = declare_parameter<double>("wheel_separation_m", 0.5);
+  gear_ratio_ = declare_parameter<double>("gear_ratio", 1.0);
+  max_motor_speed_rpm_ = declare_parameter<double>("max_motor_speed_rpm", 135.0);
+  invert_left_motor_ = declare_parameter<bool>("invert_left_motor", false);
+  invert_right_motor_ = declare_parameter<bool>("invert_right_motor", false);
+
+  const auto command_timeout_ms = declare_parameter<int>("command_timeout_ms", 500);
+  const auto control_period_ms = declare_parameter<int>("control_period_ms", 50);
+
+  if (wheel_radius_m_ <= 0.0 || wheel_separation_m_ <= 0.0 || gear_ratio_ <= 0.0 ||
+    max_motor_speed_rpm_ <= 0.0 || command_timeout_ms <= 0 || control_period_ms <= 0)
+  {
+    throw std::invalid_argument("Motor geometry, limits, and timing parameters must be positive");
+  }
+
+  command_timeout_ = std::chrono::milliseconds(command_timeout_ms);
+  motor_rpm_publisher_ = create_publisher<std_msgs::msg::Float64MultiArray>(motor_rpm_topic_, 10);
+  command_subscription_ = create_subscription<geometry_msgs::msg::Twist>(
+    command_topic_, 10,
+    std::bind(&MotorControlNode::command_callback, this, std::placeholders::_1));
+  control_timer_ = create_wall_timer(
+    std::chrono::milliseconds(control_period_ms),
+    std::bind(&MotorControlNode::control_callback, this));
+
+  RCLCPP_INFO(
+    get_logger(),
+    "Motor-control template ready: subscribing to '%s', publishing dry-run RPM on '%s'",
+    command_topic_.c_str(), motor_rpm_topic_.c_str());
+}
+
+void MotorControlNode::command_callback(const geometry_msgs::msg::Twist::SharedPtr message)
+{
+  if (!std::isfinite(message->linear.x) || !std::isfinite(message->angular.z)) {
+    RCLCPP_WARN(get_logger(), "Ignoring cmd_vel containing a non-finite value");
+    return;
+  }
+
+  linear_velocity_mps_ = message->linear.x;
+  angular_velocity_radps_ = message->angular.z;
+  last_command_time_ = std::chrono::steady_clock::now();
+  command_received_ = true;
+  watchdog_stopped_ = false;
+}
+
+void MotorControlNode::control_callback()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (!command_received_ || now - last_command_time_ > command_timeout_) {
+    if (!watchdog_stopped_) {
+      publish_motor_rpm(0.0, 0.0);
+      watchdog_stopped_ = true;
+      if (command_received_) {
+        RCLCPP_WARN(get_logger(), "Command watchdog expired; requesting zero motor speed");
+      }
+    }
+    return;
+  }
+
+  const double left_velocity_mps =
+    linear_velocity_mps_ - angular_velocity_radps_ * wheel_separation_m_ / 2.0;
+  const double right_velocity_mps =
+    linear_velocity_mps_ + angular_velocity_radps_ * wheel_separation_m_ / 2.0;
+  const double rpm_per_mps = gear_ratio_ * kSecondsPerMinute / (kTwoPi * wheel_radius_m_);
+
+  double left_rpm = std::clamp(
+    left_velocity_mps * rpm_per_mps, -max_motor_speed_rpm_, max_motor_speed_rpm_);
+  double right_rpm = std::clamp(
+    right_velocity_mps * rpm_per_mps, -max_motor_speed_rpm_, max_motor_speed_rpm_);
+
+  if (invert_left_motor_) {
+    left_rpm = -left_rpm;
+  }
+  if (invert_right_motor_) {
+    right_rpm = -right_rpm;
+  }
+
+  publish_motor_rpm(left_rpm, right_rpm);
+}
+
+void MotorControlNode::publish_motor_rpm(double left_rpm, double right_rpm)
+{
+  std_msgs::msg::Float64MultiArray message;
+  message.data = {left_rpm, right_rpm};
+  motor_rpm_publisher_->publish(std::move(message));
+
+  // TODO(gray): Replace or accompany this dry-run publisher with a SocketCAN
+  // transport that emits the Test_H503RB-compatible 0x601 command frame.
+}
+
+}  // namespace motor_control_g4dual

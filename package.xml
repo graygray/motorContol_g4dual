@@ -6,7 +6,6 @@
   <description>Upper-layer ROS 2 motor-control node for the G4 dual-motor controller.</description>
   <maintainer email="gray.lin@primax.com.tw">Gray Lin</maintainer>
   <license>MIT</license>
-  <copyright>2026 Gray Lin</copyright>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 

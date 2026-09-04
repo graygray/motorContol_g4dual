@@ -20,6 +20,13 @@ encoder positions (`0x481`), and motor-fault reports (`0x381`).
 | Subscribe | `cmd_vel` | `geometry_msgs/msg/Twist` | Linear-x and angular-z drive command |
 | Publish | `motor_rpm_command` | `std_msgs/msg/Float64MultiArray` | Dry-run `[left_rpm, right_rpm]` target |
 
+| Service | Type | Purpose |
+|---|---|---|
+| `enable_motors` | `std_srvs/srv/Trigger` | Send the staged enable sequence and an initial zero-speed command |
+| `stop_motors` | `std_srvs/srv/Trigger` | Stop motion and gate further physical speed commands |
+| `emergency_stop` | `std_srvs/srv/SetBool` | `true` requests immediate stop; `false` releases the hold without re-enabling motion |
+| `reset_faults` | `std_srvs/srv/Trigger` | Request fault reset and clear upper-layer safety latches |
+
 The node clamps targets to `max_motor_speed_rpm` and publishes zero RPM after
 `command_timeout_ms` without a valid command. See `config/motor_control.yaml`
 for geometry, gearing, motor inversion, limits, and timing parameters. The
@@ -31,10 +38,14 @@ default 135 RPM limit and 50 ms control period match the current
 | `enable_can` | `false` | Enables physical SocketCAN transmission |
 | `can_interface` | `can0` | Linux SocketCAN network-interface name |
 | `can_receive_poll_ms` | `10` | Interval used to drain received CAN frames |
+| `feedback_timeout_ms` | `500` | Enabled-motion timeout for speed/position feedback |
 
 SocketCAN support requires Linux. If CAN is explicitly enabled and the named
 interface cannot be opened, node startup fails instead of silently continuing
-in dry-run mode.
+in dry-run mode. Physical speed commands remain gated until `enable_motors`
+succeeds. A motor-fault report or feedback timeout closes that gate and sends
+an immediate emergency-stop command. Shutdown sends zero RPM and then stop
+before closing the CAN socket.
 
 ## Build and run (ROS 2 Humble)
 
@@ -74,9 +85,9 @@ inversion against the real platform before any hardware transport is enabled.
 4. **CAN receive and decoding (complete):** filtered nonblocking reception and
    typed decoding for firmware, measured speed, encoder delta, absolute encoder
    position, and motor-fault frames on `0x581`, `0x481`, and `0x381`.
-5. **Lifecycle and safety:** explicit enable/stop/reset services, emergency-stop
-   behavior, heartbeat/feedback timeout, and safe shutdown that requests zero
-   speed before disabling the drive.
+5. **Lifecycle and safety (complete):** explicit enable/stop/reset services,
+   emergency-stop behavior, feedback timeout, command gating, fault latching,
+   and safe shutdown that requests zero speed before stopping the drive.
 6. **Feedback and odometry:** publish measured wheel speed, encoder deltas,
    faults, diagnostics, joint states, and odometry with verified sign and unit
    conventions.

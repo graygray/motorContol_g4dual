@@ -12,6 +12,7 @@ find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(Threads REQUIRED)
 
 add_library(motor_can_protocol STATIC
@@ -50,6 +51,7 @@ ament_target_dependencies(motor_control_node
   geometry_msgs
   rclcpp
   std_msgs
+  std_srvs
 )
 
 install(TARGETS motor_can_protocol socket_can_transport motor_control_node

@@ -60,8 +60,8 @@ enum class LowerTestCase : std::uint8_t
 enum class ControlCommand : std::uint8_t
 {
   kStop = 0x00U,
-  kEmergencyStop = 0x02U,
-  kEmergencyStopRamp = 0x03U,
+  kEmergencyStopRamped = 0x02U,
+  kEmergencyStopImmediate = 0x03U,
   kEnableStage1 = 0x06U,
   kEnableStage2 = 0x07U,
   kResetFaults = 0x08U,

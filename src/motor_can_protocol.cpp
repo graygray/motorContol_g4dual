@@ -164,8 +164,8 @@ std::optional<CanFrame> MotorCanProtocol::encode_control(ControlCommand command)
 {
   switch (command) {
     case ControlCommand::kStop:
-    case ControlCommand::kEmergencyStop:
-    case ControlCommand::kEmergencyStopRamp:
+    case ControlCommand::kEmergencyStopRamped:
+    case ControlCommand::kEmergencyStopImmediate:
     case ControlCommand::kEnableStage1:
     case ControlCommand::kEnableStage2:
     case ControlCommand::kResetFaults:

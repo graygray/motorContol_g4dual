@@ -36,9 +36,11 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
 
   const auto command_timeout_ms = declare_parameter<int>("command_timeout_ms", 500);
   const auto control_period_ms = declare_parameter<int>("control_period_ms", 50);
+  const auto can_receive_poll_ms = declare_parameter<int>("can_receive_poll_ms", 10);
 
   if (wheel_radius_m_ <= 0.0 || wheel_separation_m_ <= 0.0 || gear_ratio_ <= 0.0 ||
-    max_motor_speed_rpm_ <= 0.0 || command_timeout_ms <= 0 || control_period_ms <= 0)
+    max_motor_speed_rpm_ <= 0.0 || command_timeout_ms <= 0 || control_period_ms <= 0 ||
+    can_receive_poll_ms <= 0)
   {
     throw std::invalid_argument("Motor geometry, limits, and timing parameters must be positive");
   }
@@ -56,6 +58,9 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
         "Failed to open SocketCAN interface '" + can_interface_ + "': " + error_message);
     }
     RCLCPP_INFO(get_logger(), "SocketCAN transmission enabled on '%s'", can_interface_.c_str());
+    can_receive_timer_ = create_wall_timer(
+      std::chrono::milliseconds(can_receive_poll_ms),
+      std::bind(&MotorControlNode::receive_can_frames, this));
   } else {
     RCLCPP_WARN(get_logger(), "SocketCAN transmission is disabled; running in dry-run mode");
   }
@@ -147,6 +152,55 @@ void MotorControlNode::publish_motor_rpm(double left_rpm, double right_rpm)
       get_logger(), *get_clock(), 1000, "CAN command transmission failed: %s",
       error_message.c_str());
   }
+}
+
+void MotorControlNode::receive_can_frames()
+{
+  constexpr std::size_t kMaximumFramesPerPoll = 64U;
+  for (std::size_t index = 0U; index < kMaximumFramesPerPoll; ++index) {
+    CanFrame frame;
+    std::string error_message;
+    const auto receive_status = can_transport_->receive(frame, error_message);
+    if (receive_status == ReceiveStatus::kNoData) {
+      return;
+    }
+    if (receive_status == ReceiveStatus::kError) {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 1000, "CAN receive failed: %s", error_message.c_str());
+      return;
+    }
+
+    const auto decoded = MotorCanProtocol::decode(frame);
+    if (!decoded) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Ignoring malformed CAN frame 0x%03X (decode status %u)", frame.id,
+        static_cast<unsigned int>(decoded.status));
+      continue;
+    }
+
+    if (const auto * reply = std::get_if<FirmwareReply>(&*decoded.message)) {
+      RCLCPP_INFO(
+        get_logger(), "Motor-controller firmware identifier: %s",
+        reply->identifier.c_str());
+    } else if (const auto * reply = std::get_if<WheelSpeedsReply>(&*decoded.message)) {
+      latest_wheel_speeds_ = *reply;
+    } else if (const auto * reply = std::get_if<EncoderDeltasReply>(&*decoded.message)) {
+      latest_encoder_deltas_ = *reply;
+    } else if (const auto * report = std::get_if<EncoderPositionReport>(&*decoded.message)) {
+      latest_encoder_positions_ = *report;
+    } else if (const auto * report = std::get_if<MotorFaultReport>(&*decoded.message)) {
+      latest_motor_fault_ = *report;
+      RCLCPP_ERROR(
+        get_logger(), "Motor %u reported fault mask 0x%04X",
+        static_cast<unsigned int>(report->motor),
+        static_cast<unsigned int>(report->fault_mask));
+    }
+  }
+
+  RCLCPP_WARN_THROTTLE(
+    get_logger(), *get_clock(), 1000,
+    "CAN receive backlog exceeded %zu frames in one poll", kMaximumFramesPerPoll);
 }
 
 }  // namespace motor_control_g4dual

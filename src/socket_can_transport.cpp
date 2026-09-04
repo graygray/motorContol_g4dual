@@ -60,7 +60,8 @@ bool SocketCanTransport::open(std::string & error_message)
     return false;
   }
 
-  const int candidate_fd = ::socket(PF_CAN, SOCK_RAW | SOCK_CLOEXEC, CAN_RAW);
+  const int candidate_fd = ::socket(
+    PF_CAN, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, CAN_RAW);
   if (candidate_fd < 0) {
     error_message = system_error("Cannot create SocketCAN socket");
     return false;
@@ -69,6 +70,21 @@ bool SocketCanTransport::open(std::string & error_message)
   sockaddr_can address{};
   address.can_family = AF_CAN;
   address.can_ifindex = static_cast<int>(interface_index);
+
+  constexpr can_filter receive_filters[] = {
+    {MotorCanProtocol::kReplyId, CAN_SFF_MASK | CAN_EFF_FLAG | CAN_RTR_FLAG},
+    {MotorCanProtocol::kEncoderReportId, CAN_SFF_MASK | CAN_EFF_FLAG | CAN_RTR_FLAG},
+    {MotorCanProtocol::kFaultReportId, CAN_SFF_MASK | CAN_EFF_FLAG | CAN_RTR_FLAG},
+  };
+  if (::setsockopt(
+      candidate_fd, SOL_CAN_RAW, CAN_RAW_FILTER,
+      receive_filters, sizeof(receive_filters)) < 0)
+  {
+    error_message = system_error("Cannot configure SocketCAN receive filters");
+    ::close(candidate_fd);
+    return false;
+  }
+
   if (::bind(
       candidate_fd, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) < 0)
   {
@@ -82,6 +98,53 @@ bool SocketCanTransport::open(std::string & error_message)
 #else
   error_message = "SocketCAN is only supported on Linux";
   return false;
+#endif
+}
+
+ReceiveStatus SocketCanTransport::receive(CanFrame & frame, std::string & error_message)
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  error_message.clear();
+
+#ifdef __linux__
+  if (socket_fd_ < 0) {
+    error_message = "SocketCAN transport is not open";
+    return ReceiveStatus::kError;
+  }
+
+  can_frame socket_frame{};
+  ssize_t bytes_read;
+  do {
+    bytes_read = ::read(socket_fd_, &socket_frame, sizeof(socket_frame));
+  } while (bytes_read < 0 && errno == EINTR);
+
+  if (bytes_read < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+    return ReceiveStatus::kNoData;
+  }
+  if (bytes_read < 0) {
+    error_message = system_error("SocketCAN read failed");
+    return ReceiveStatus::kError;
+  }
+  if (bytes_read != static_cast<ssize_t>(sizeof(socket_frame))) {
+    error_message = "SocketCAN read returned an incomplete frame";
+    return ReceiveStatus::kError;
+  }
+  if ((socket_frame.can_id & (CAN_EFF_FLAG | CAN_RTR_FLAG | CAN_ERR_FLAG)) != 0U ||
+    socket_frame.can_dlc > frame.data.size())
+  {
+    error_message = "SocketCAN received an unsupported frame format";
+    return ReceiveStatus::kError;
+  }
+
+  frame = CanFrame{};
+  frame.id = static_cast<std::uint16_t>(socket_frame.can_id & CAN_SFF_MASK);
+  frame.length = socket_frame.can_dlc;
+  std::copy_n(socket_frame.data, frame.length, frame.data.begin());
+  return ReceiveStatus::kFrameReceived;
+#else
+  static_cast<void>(frame);
+  error_message = "SocketCAN is only supported on Linux";
+  return ReceiveStatus::kError;
 #endif
 }
 

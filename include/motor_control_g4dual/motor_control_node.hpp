@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "geometry_msgs/msg/twist.hpp"
@@ -23,6 +24,7 @@ public:
 private:
   void command_callback(const geometry_msgs::msg::Twist::SharedPtr message);
   void control_callback();
+  void receive_can_frames();
   void publish_motor_rpm(double left_rpm, double right_rpm);
 
   std::string command_topic_;
@@ -43,10 +45,15 @@ private:
   bool watchdog_stopped_{false};
   std::chrono::steady_clock::time_point last_command_time_;
   std::unique_ptr<SocketCanTransport> can_transport_;
+  std::optional<WheelSpeedsReply> latest_wheel_speeds_;
+  std::optional<EncoderDeltasReply> latest_encoder_deltas_;
+  std::optional<EncoderPositionReport> latest_encoder_positions_;
+  std::optional<MotorFaultReport> latest_motor_fault_;
 
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr command_subscription_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr motor_rpm_publisher_;
   rclcpp::TimerBase::SharedPtr control_timer_;
+  rclcpp::TimerBase::SharedPtr can_receive_timer_;
 };
 
 }  // namespace motor_control_g4dual

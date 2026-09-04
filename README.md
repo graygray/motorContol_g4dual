@@ -10,6 +10,8 @@ The repository also contains a transport-independent C++ CAN encoder matching
 the command payloads in `Test_H503RB/Core/Src/motor_can.c`. The encoder creates
 eight-byte standard-ID `0x601` frames. When `enable_can` is true, the node
 transmits those frames through the interface selected by `can_interface`.
+The same transport receives and decodes controller replies (`0x581`), absolute
+encoder positions (`0x481`), and motor-fault reports (`0x381`).
 
 ## Current ROS interface
 
@@ -28,6 +30,7 @@ default 135 RPM limit and 50 ms control period match the current
 |---|---:|---|
 | `enable_can` | `false` | Enables physical SocketCAN transmission |
 | `can_interface` | `can0` | Linux SocketCAN network-interface name |
+| `can_receive_poll_ms` | `10` | Interval used to drain received CAN frames |
 
 SocketCAN support requires Linux. If CAN is explicitly enabled and the named
 interface cannot be opened, node startup fails instead of silently continuing
@@ -67,15 +70,17 @@ inversion against the real platform before any hardware transport is enabled.
    including signed RPM x10 encoding.
 3. **SocketCAN transmit transport (complete):** configurable interface (for
    example `can0`), strict `0x601` command-ID validation, transmit error
-   reporting, and hardware-disabled startup mode. Receive and reconnect logic
-   will be added with feedback decoding.
-4. **Lifecycle and safety:** explicit enable/stop/reset services, emergency-stop
+   reporting, and hardware-disabled startup mode.
+4. **CAN receive and decoding (complete):** filtered nonblocking reception and
+   typed decoding for firmware, measured speed, encoder delta, absolute encoder
+   position, and motor-fault frames on `0x581`, `0x481`, and `0x381`.
+5. **Lifecycle and safety:** explicit enable/stop/reset services, emergency-stop
    behavior, heartbeat/feedback timeout, and safe shutdown that requests zero
    speed before disabling the drive.
-5. **Feedback and odometry:** publish measured wheel speed, encoder deltas,
+6. **Feedback and odometry:** publish measured wheel speed, encoder deltas,
    faults, diagnostics, joint states, and odometry with verified sign and unit
    conventions.
-6. **Verification:** unit tests for kinematics and byte encoding, virtual-CAN
+7. **Verification:** unit tests for kinematics and byte encoding, virtual-CAN
    integration tests, then guarded bench testing with wheels off the ground.
 
 ## Repository layout
@@ -84,7 +89,7 @@ inversion against the real platform before any hardware transport is enabled.
 |---|---|
 | `include/motor_control_g4dual/` | Node declarations |
 | `src/motor_can_protocol.cpp` | ROS-independent `0x601` frame encoder |
-| `src/socket_can_transport.cpp` | Linux SocketCAN command transmitter |
+| `src/socket_can_transport.cpp` | Filtered Linux SocketCAN RX/TX transport |
 | `src/motor_control_node.cpp` | ROS node implementation |
 | `src/main.cpp` | ROS executable entry point |
 | `config/` | Runtime parameters |

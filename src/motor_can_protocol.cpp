@@ -4,6 +4,7 @@
 #include "motor_control_g4dual/motor_can_protocol.hpp"
 
 #include <cmath>
+#include <limits>
 #include <type_traits>
 
 namespace motor_control_g4dual
@@ -25,6 +26,68 @@ void write_int16_little_endian(
   const auto raw_value = static_cast<std::uint16_t>(value);
   data[offset] = static_cast<std::uint8_t>(raw_value & 0xFFU);
   data[offset + 1U] = static_cast<std::uint8_t>((raw_value >> 8U) & 0xFFU);
+}
+
+std::int16_t read_int16_little_endian(
+  const std::array<std::uint8_t, 8U> & data, std::size_t offset)
+{
+  const auto value = static_cast<std::uint16_t>(data[offset]) |
+    static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[offset + 1U]) << 8U);
+  if (value <= static_cast<std::uint16_t>(std::numeric_limits<std::int16_t>::max())) {
+    return static_cast<std::int16_t>(value);
+  }
+  return static_cast<std::int16_t>(static_cast<std::int32_t>(value) - 0x10000);
+}
+
+std::int32_t read_int32_little_endian(
+  const std::array<std::uint8_t, 8U> & data, std::size_t offset)
+{
+  const auto value = static_cast<std::uint32_t>(data[offset]) |
+    (static_cast<std::uint32_t>(data[offset + 1U]) << 8U) |
+    (static_cast<std::uint32_t>(data[offset + 2U]) << 16U) |
+    (static_cast<std::uint32_t>(data[offset + 3U]) << 24U);
+  if (value <= static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
+    return static_cast<std::int32_t>(value);
+  }
+  return static_cast<std::int32_t>(static_cast<std::int64_t>(value) - 0x100000000LL);
+}
+
+DecodeResult decode_reply(const CanFrame & frame)
+{
+  if (frame.data[0] == 0x43U && frame.data[1] == 0x6CU && frame.data[2] == 0x60U) {
+    return {
+      DecodeStatus::kSuccess,
+      WheelSpeedsReply{
+        static_cast<double>(read_int16_little_endian(frame.data, 4U)) /
+        MotorCanProtocol::kSpeedUnitsPerRpm,
+        static_cast<double>(read_int16_little_endian(frame.data, 6U)) /
+        MotorCanProtocol::kSpeedUnitsPerRpm}};
+  }
+
+  if (frame.data[0] == 0x00U && frame.data[1] == 0x64U && frame.data[2] == 0x60U) {
+    return {
+      DecodeStatus::kSuccess,
+      EncoderDeltasReply{
+        read_int16_little_endian(frame.data, 4U),
+        read_int16_little_endian(frame.data, 6U)}};
+  }
+
+  std::string identifier;
+  bool null_seen = false;
+  for (const auto byte : frame.data) {
+    if (byte == 0U) {
+      null_seen = true;
+      continue;
+    }
+    if (null_seen || byte < 0x20U || byte > 0x7EU) {
+      return {DecodeStatus::kInvalidPayload, std::nullopt};
+    }
+    identifier.push_back(static_cast<char>(byte));
+  }
+  if (identifier.empty()) {
+    return {DecodeStatus::kInvalidPayload, std::nullopt};
+  }
+  return {DecodeStatus::kSuccess, FirmwareReply{identifier}};
 }
 }  // namespace
 
@@ -148,6 +211,42 @@ CanFrame MotorCanProtocol::encode_encoder_deltas_request()
   return make_frame({0x43U, 0x64U, 0x60U, kMotorBoth, 0U, 0U, 0U, 0U});
 }
 
+DecodeResult MotorCanProtocol::decode(const CanFrame & frame)
+{
+  if (frame.id != kReplyId && frame.id != kEncoderReportId && frame.id != kFaultReportId) {
+    return {DecodeStatus::kUnsupportedId, std::nullopt};
+  }
+  if (frame.length != frame.data.size()) {
+    return {DecodeStatus::kInvalidLength, std::nullopt};
+  }
+
+  if (frame.id == kReplyId) {
+    return decode_reply(frame);
+  }
+  if (frame.id == kEncoderReportId) {
+    return {
+      DecodeStatus::kSuccess,
+      EncoderPositionReport{
+        read_int32_little_endian(frame.data, 0U),
+        read_int32_little_endian(frame.data, 4U)}};
+  }
+
+  if ((frame.data[0] != to_byte(MotorSelector::kM1) &&
+    frame.data[0] != to_byte(MotorSelector::kM2)) ||
+    frame.data[3] != 0U || frame.data[4] != 0U || frame.data[5] != 0U ||
+    frame.data[6] != 0U || frame.data[7] != 0U)
+  {
+    return {DecodeStatus::kInvalidPayload, std::nullopt};
+  }
+
+  const auto fault_mask = static_cast<std::uint16_t>(
+    static_cast<std::uint16_t>(frame.data[1]) |
+    static_cast<std::uint16_t>(static_cast<std::uint16_t>(frame.data[2]) << 8U));
+  return {
+    DecodeStatus::kSuccess,
+    MotorFaultReport{static_cast<MotorSelector>(frame.data[0]), fault_mask}};
+}
+
 std::optional<std::int16_t> MotorCanProtocol::encode_speed_units(double speed_rpm)
 {
   if (!std::isfinite(speed_rpm) || speed_rpm < -kMaxSpeedRpm || speed_rpm > kMaxSpeedRpm) {
@@ -163,4 +262,3 @@ CanFrame MotorCanProtocol::make_frame(const std::array<std::uint8_t, 8U> & data)
 }
 
 }  // namespace motor_control_g4dual
-

@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <variant>
 
 namespace motor_control_g4dual
 {
@@ -72,6 +74,62 @@ enum class SCurveDirection : std::uint8_t
   kDeceleration = 0x84U,
 };
 
+struct FirmwareReply
+{
+  std::string identifier;
+};
+
+struct WheelSpeedsReply
+{
+  double m1_speed_rpm{0.0};
+  double m2_speed_rpm{0.0};
+};
+
+struct EncoderDeltasReply
+{
+  std::int16_t m1_delta{0};
+  std::int16_t m2_delta{0};
+};
+
+struct EncoderPositionReport
+{
+  // Quadrature-scaled wire counts; the controller reports 16,384 per revolution.
+  std::int32_t m1_position{0};
+  std::int32_t m2_position{0};
+};
+
+struct MotorFaultReport
+{
+  MotorSelector motor{MotorSelector::kM1};
+  std::uint16_t fault_mask{0U};
+};
+
+using DecodedCanMessage = std::variant<
+  FirmwareReply,
+  WheelSpeedsReply,
+  EncoderDeltasReply,
+  EncoderPositionReport,
+  MotorFaultReport>;
+
+enum class DecodeStatus
+{
+  kSuccess,
+  kUnsupportedId,
+  kInvalidLength,
+  kInvalidPayload,
+};
+
+struct DecodeResult
+{
+  DecodeStatus status{DecodeStatus::kInvalidPayload};
+  std::optional<DecodedCanMessage> message;
+
+  explicit operator bool() const noexcept
+  {
+    return status == DecodeStatus::kSuccess && message.has_value();
+  }
+};
+
 class MotorCanProtocol
 {
 public:
@@ -81,6 +139,7 @@ public:
   static constexpr std::uint16_t kFaultReportId = 0x381U;
   static constexpr double kMaxSpeedRpm = 135.0;
   static constexpr double kSpeedUnitsPerRpm = 10.0;
+  static constexpr double kEncoderCountsPerRevolution = 16384.0;
 
   static std::optional<CanFrame> encode_motor_speed(
     MotorSelector motor, double speed_rpm);
@@ -98,6 +157,7 @@ public:
   static CanFrame encode_firmware_version_request();
   static CanFrame encode_wheel_speeds_request();
   static CanFrame encode_encoder_deltas_request();
+  static DecodeResult decode(const CanFrame & frame);
 
 private:
   static std::optional<std::int16_t> encode_speed_units(double speed_rpm);
@@ -105,4 +165,3 @@ private:
 };
 
 }  // namespace motor_control_g4dual
-

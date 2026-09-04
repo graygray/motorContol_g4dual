@@ -3,11 +3,13 @@
 Upper-layer ROS 2 Humble motor-control package for the G4 dual-motor
 controller. This first increment is a safe node template: it converts
 `geometry_msgs/msg/Twist` commands into left/right motor RPM targets and
-publishes them for inspection. It does **not** access CAN hardware yet.
+publishes them for inspection. SocketCAN transmission is available but remains
+disabled by default.
 
 The repository also contains a transport-independent C++ CAN encoder matching
 the command payloads in `Test_H503RB/Core/Src/motor_can.c`. The encoder creates
-eight-byte standard-ID `0x601` frames but does not transmit them.
+eight-byte standard-ID `0x601` frames. When `enable_can` is true, the node
+transmits those frames through the interface selected by `can_interface`.
 
 ## Current ROS interface
 
@@ -21,6 +23,15 @@ The node clamps targets to `max_motor_speed_rpm` and publishes zero RPM after
 for geometry, gearing, motor inversion, limits, and timing parameters. The
 default 135 RPM limit and 50 ms control period match the current
 `Test_H503RB` firmware contract.
+
+| Parameter | Default | Purpose |
+|---|---:|---|
+| `enable_can` | `false` | Enables physical SocketCAN transmission |
+| `can_interface` | `can0` | Linux SocketCAN network-interface name |
+
+SocketCAN support requires Linux. If CAN is explicitly enabled and the named
+interface cannot be opened, node startup fails instead of silently continuing
+in dry-run mode.
 
 ## Build and run (ROS 2 Humble)
 
@@ -54,8 +65,10 @@ inversion against the real platform before any hardware transport is enabled.
 2. **CAN protocol module (complete):** encode the STM32-compatible classic CAN frames
    (`0x601` commands; `0x581`, `0x481`, and `0x381` feedback/fault frames),
    including signed RPM x10 encoding.
-3. **SocketCAN transport:** configurable interface (for example `can0`), RX/TX
-   error handling, reconnect behavior, and hardware-disabled startup mode.
+3. **SocketCAN transmit transport (complete):** configurable interface (for
+   example `can0`), strict `0x601` command-ID validation, transmit error
+   reporting, and hardware-disabled startup mode. Receive and reconnect logic
+   will be added with feedback decoding.
 4. **Lifecycle and safety:** explicit enable/stop/reset services, emergency-stop
    behavior, heartbeat/feedback timeout, and safe shutdown that requests zero
    speed before disabling the drive.
@@ -71,6 +84,7 @@ inversion against the real platform before any hardware transport is enabled.
 |---|---|
 | `include/motor_control_g4dual/` | Node declarations |
 | `src/motor_can_protocol.cpp` | ROS-independent `0x601` frame encoder |
+| `src/socket_can_transport.cpp` | Linux SocketCAN command transmitter |
 | `src/motor_control_node.cpp` | ROS node implementation |
 | `src/main.cpp` | ROS executable entry point |
 | `config/` | Runtime parameters |

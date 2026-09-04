@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "motor_control_g4dual/motor_can_protocol.hpp"
+
 namespace motor_control_g4dual
 {
 namespace
@@ -23,6 +25,8 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
 {
   command_topic_ = declare_parameter<std::string>("command_topic", "cmd_vel");
   motor_rpm_topic_ = declare_parameter<std::string>("motor_rpm_topic", "motor_rpm_command");
+  can_interface_ = declare_parameter<std::string>("can_interface", "can0");
+  enable_can_ = declare_parameter<bool>("enable_can", false);
   wheel_radius_m_ = declare_parameter<double>("wheel_radius_m", 0.1);
   wheel_separation_m_ = declare_parameter<double>("wheel_separation_m", 0.5);
   gear_ratio_ = declare_parameter<double>("gear_ratio", 1.0);
@@ -38,8 +42,24 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
   {
     throw std::invalid_argument("Motor geometry, limits, and timing parameters must be positive");
   }
+  if (max_motor_speed_rpm_ > MotorCanProtocol::kMaxSpeedRpm) {
+    throw std::invalid_argument("max_motor_speed_rpm exceeds the CAN protocol limit of 135 RPM");
+  }
 
   command_timeout_ = std::chrono::milliseconds(command_timeout_ms);
+
+  if (enable_can_) {
+    can_transport_ = std::make_unique<SocketCanTransport>(can_interface_);
+    std::string error_message;
+    if (!can_transport_->open(error_message)) {
+      throw std::runtime_error(
+        "Failed to open SocketCAN interface '" + can_interface_ + "': " + error_message);
+    }
+    RCLCPP_INFO(get_logger(), "SocketCAN transmission enabled on '%s'", can_interface_.c_str());
+  } else {
+    RCLCPP_WARN(get_logger(), "SocketCAN transmission is disabled; running in dry-run mode");
+  }
+
   motor_rpm_publisher_ = create_publisher<std_msgs::msg::Float64MultiArray>(motor_rpm_topic_, 10);
   command_subscription_ = create_subscription<geometry_msgs::msg::Twist>(
     command_topic_, 10,
@@ -50,7 +70,7 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
 
   RCLCPP_INFO(
     get_logger(),
-    "Motor-control template ready: subscribing to '%s', publishing dry-run RPM on '%s'",
+    "Motor-control node ready: subscribing to '%s', publishing RPM targets on '%s'",
     command_topic_.c_str(), motor_rpm_topic_.c_str());
 }
 
@@ -109,8 +129,24 @@ void MotorControlNode::publish_motor_rpm(double left_rpm, double right_rpm)
   message.data = {left_rpm, right_rpm};
   motor_rpm_publisher_->publish(std::move(message));
 
-  // TODO(gray): Replace or accompany this dry-run publisher with a SocketCAN
-  // transport that emits the Test_H503RB-compatible 0x601 command frame.
+  if (!enable_can_) {
+    return;
+  }
+
+  const auto frame = MotorCanProtocol::encode_wheel_speeds(left_rpm, right_rpm);
+  if (!frame) {
+    RCLCPP_ERROR_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "Cannot encode motor RPM command (left=%.3f, right=%.3f)", left_rpm, right_rpm);
+    return;
+  }
+
+  std::string error_message;
+  if (!can_transport_->send_command(*frame, error_message)) {
+    RCLCPP_ERROR_THROTTLE(
+      get_logger(), *get_clock(), 1000, "CAN command transmission failed: %s",
+      error_message.c_str());
+  }
 }
 
 }  // namespace motor_control_g4dual

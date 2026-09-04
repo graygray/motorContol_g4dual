@@ -8,6 +8,7 @@
 #include <string>
 
 #include "geometry_msgs/msg/twist.hpp"
+#include "motor_control_g4dual/socket_can_transport.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 
@@ -26,6 +27,8 @@ private:
 
   std::string command_topic_;
   std::string motor_rpm_topic_;
+  std::string can_interface_;
+  bool enable_can_;
   double wheel_radius_m_;
   double wheel_separation_m_;
   double gear_ratio_;
@@ -39,6 +42,7 @@ private:
   bool command_received_{false};
   bool watchdog_stopped_{false};
   std::chrono::steady_clock::time_point last_command_time_;
+  std::unique_ptr<SocketCanTransport> can_transport_;
 
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr command_subscription_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr motor_rpm_publisher_;

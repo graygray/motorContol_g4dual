@@ -5,6 +5,8 @@ motor_control:
   ros__parameters:
     command_topic: cmd_vel
     motor_rpm_topic: motor_rpm_command
+    enable_can: false
+    can_interface: can0
     wheel_radius_m: 0.1
     wheel_separation_m: 0.5
     gear_ratio: 1.0

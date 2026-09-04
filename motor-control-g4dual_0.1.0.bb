@@ -62,6 +62,13 @@ DEPENDS = "${ROS_BUILD_DEPENDS} ${ROS_BUILDTOOL_DEPENDS}"
 DEPENDS += "${ROS_EXPORT_DEPENDS} ${ROS_BUILDTOOL_EXPORT_DEPENDS}"
 RDEPENDS:${PN} += "${ROS_EXEC_DEPENDS}"
 
+# The ROS package name uses underscores while the BitBake package name uses
+# hyphens, so claim the ament metadata and node installed under ROS_CN.
+FILES:${PN} += " \
+    ${libdir}/${ROS_CN} \
+    ${datadir}/${ROS_CN} \
+"
+
 ROS_BRANCH ?= "branch=main"
 SRC_URI = "git://git@github.com/graygray/motorContol_g4dual.git;${ROS_BRANCH};protocol=ssh"
 SRCREV = "${AUTOREV}"

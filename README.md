@@ -43,7 +43,7 @@ default 135 RPM limit and 50 ms control period match the current
 |---|---:|---|
 | `enable_can` | `false` | Enables physical SocketCAN transmission |
 | `can_interface` | `can0` | Linux SocketCAN network-interface name |
-| `can_receive_poll_ms` | `10` | Interval used to drain received CAN frames |
+| `can_receive_poll_ms` | `50` | Interval used to drain received CAN frames |
 | `feedback_timeout_ms` | `500` | Enabled-motion timeout for speed/position feedback |
 | `odom_frame_id` / `base_frame_id` | `odom` / `base_link` | Odometry frame names |
 | `left_joint_name` / `right_joint_name` | wheel joint names | Joint-state names |

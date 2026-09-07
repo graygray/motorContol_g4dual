@@ -36,16 +36,16 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
   right_joint_name_ = declare_parameter<std::string>("right_joint_name", "right_wheel_joint");
   enable_can_ = declare_parameter<bool>("enable_can", false);
   publish_odom_tf_ = declare_parameter<bool>("publish_odom_tf", true);
-  wheel_radius_m_ = declare_parameter<double>("wheel_radius_m", 0.1);
-  wheel_separation_m_ = declare_parameter<double>("wheel_separation_m", 0.5);
+  wheel_radius_m_ = declare_parameter<double>("wheel_radius_m", 0.085);
+  wheel_separation_m_ = declare_parameter<double>("wheel_separation_m", 0.4762);
   gear_ratio_ = declare_parameter<double>("gear_ratio", 1.0);
   max_motor_speed_rpm_ = declare_parameter<double>("max_motor_speed_rpm", 135.0);
   invert_left_motor_ = declare_parameter<bool>("invert_left_motor", false);
-  invert_right_motor_ = declare_parameter<bool>("invert_right_motor", false);
+  invert_right_motor_ = declare_parameter<bool>("invert_right_motor", true);
 
   const auto command_timeout_ms = declare_parameter<int>("command_timeout_ms", 500);
   const auto control_period_ms = declare_parameter<int>("control_period_ms", 50);
-  const auto can_receive_poll_ms = declare_parameter<int>("can_receive_poll_ms", 10);
+  const auto can_receive_poll_ms = declare_parameter<int>("can_receive_poll_ms", 50);
   const auto feedback_timeout_ms = declare_parameter<int>("feedback_timeout_ms", 500);
 
   if (wheel_radius_m_ <= 0.0 || wheel_separation_m_ <= 0.0 || gear_ratio_ <= 0.0 ||

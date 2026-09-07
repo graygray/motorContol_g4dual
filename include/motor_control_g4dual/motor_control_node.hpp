@@ -28,7 +28,8 @@ namespace motor_control_g4dual
 class MotorControlNode : public rclcpp::Node
 {
 public:
-  explicit MotorControlNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  explicit MotorControlNode(
+    const rclcpp::NodeOptions & options = rclcpp::NodeOptions(), bool log_enabled = false);
   ~MotorControlNode() override;
 
 private:
@@ -67,6 +68,7 @@ private:
   std::string right_joint_name_;
   bool enable_can_;
   bool publish_odom_tf_;
+  bool log_enabled_;
   double wheel_radius_m_;
   double wheel_separation_m_;
   double gear_ratio_;

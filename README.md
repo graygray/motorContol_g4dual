@@ -75,6 +75,24 @@ source install/setup.bash
 ros2 launch motor_control_g4dual motor_control.launch.py
 ```
 
+Code-flow logging is disabled by default. Enable it when launching the node:
+
+```bash
+ros2 launch motor_control_g4dual motor_control.launch.py log:=true
+```
+
+When running the executable directly, `--log` enables logging and an explicit
+Boolean value can enable or disable it:
+
+```bash
+ros2 run motor_control_g4dual motor_control_node --log
+ros2 run motor_control_g4dual motor_control_node --log=false
+```
+
+Accepted values are `true`/`false`, `1`/`0`, and `on`/`off`. Repetitive control,
+feedback, odometry, and diagnostics messages are throttled to keep the output
+readable.
+
 For a dry-run command:
 
 ```bash

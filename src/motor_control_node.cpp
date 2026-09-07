@@ -20,10 +20,33 @@ namespace
 {
 constexpr double kSecondsPerMinute = 60.0;
 constexpr double kTwoPi = 6.28318530717958647692;
+
+const char * control_command_name(ControlCommand command)
+{
+  switch (command) {
+    case ControlCommand::kEnableStage1:
+      return "enable stage 1";
+    case ControlCommand::kEnableStage2:
+      return "enable stage 2";
+    case ControlCommand::kEnableOperation:
+      return "enable operation";
+    case ControlCommand::kStop:
+      return "stop";
+    case ControlCommand::kEmergencyStop:
+      return "emergency stop";
+    case ControlCommand::kEmergencyStopRamp:
+      return "emergency ramp stop";
+    case ControlCommand::kResetFaults:
+      return "reset faults";
+    default:
+      return "unknown";
+  }
+}
 }
 
-MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
+MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool log_enabled)
 : Node("motor_control", options),
+  log_enabled_(log_enabled),
   last_command_time_(std::chrono::steady_clock::now()),
   last_feedback_time_(std::chrono::steady_clock::now())
 {
@@ -71,12 +94,16 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
       throw std::runtime_error(
         "Failed to open SocketCAN interface '" + can_interface_ + "': " + error_message);
     }
-    RCLCPP_INFO(get_logger(), "SocketCAN transmission enabled on '%s'", can_interface_.c_str());
+    if (log_enabled_) {
+      RCLCPP_INFO(get_logger(), "SocketCAN transmission enabled on '%s'", can_interface_.c_str());
+    }
     can_receive_timer_ = create_wall_timer(
       std::chrono::milliseconds(can_receive_poll_ms),
       std::bind(&MotorControlNode::receive_can_frames, this));
   } else {
-    RCLCPP_WARN(get_logger(), "SocketCAN transmission is disabled; running in dry-run mode");
+    if (log_enabled_) {
+      RCLCPP_WARN(get_logger(), "SocketCAN transmission is disabled; running in dry-run mode");
+    }
   }
 
   motor_rpm_publisher_ = create_publisher<std_msgs::msg::Float64MultiArray>(motor_rpm_topic_, 10);
@@ -119,16 +146,26 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options)
       &MotorControlNode::set_emergency_stop, this,
       std::placeholders::_1, std::placeholders::_2));
 
-  RCLCPP_INFO(
-    get_logger(),
-    "Motor-control node ready: subscribing to '%s', publishing RPM targets on '%s'",
-    command_topic_.c_str(), motor_rpm_topic_.c_str());
+  if (log_enabled_) {
+    RCLCPP_INFO(
+      get_logger(),
+      "Node ready: cmd='%s', rpm='%s', CAN=%s, control=%d ms, watchdog=%d ms",
+      command_topic_.c_str(), motor_rpm_topic_.c_str(), enable_can_ ? "enabled" : "disabled",
+      control_period_ms, command_timeout_ms);
+  }
 }
 
 MotorControlNode::~MotorControlNode()
 {
   if (!can_transport_ || !can_transport_->is_open()) {
+    if (log_enabled_) {
+      RCLCPP_INFO(get_logger(), "Node shutting down; no open CAN transport to stop");
+    }
     return;
+  }
+
+  if (log_enabled_) {
+    RCLCPP_INFO(get_logger(), "Node shutting down; sending zero speed and stop");
   }
 
   std::string ignored_error;
@@ -146,7 +183,9 @@ MotorControlNode::~MotorControlNode()
 void MotorControlNode::command_callback(const geometry_msgs::msg::Twist::SharedPtr message)
 {
   if (!std::isfinite(message->linear.x) || !std::isfinite(message->angular.z)) {
-    RCLCPP_WARN(get_logger(), "Ignoring cmd_vel containing a non-finite value");
+    if (log_enabled_) {
+      RCLCPP_WARN(get_logger(), "Ignoring cmd_vel containing a non-finite value");
+    }
     return;
   }
 
@@ -155,6 +194,11 @@ void MotorControlNode::command_callback(const geometry_msgs::msg::Twist::SharedP
   last_command_time_ = std::chrono::steady_clock::now();
   command_received_ = true;
   watchdog_stopped_ = false;
+  if (log_enabled_) {
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 1000, "cmd_vel received: linear=%.3f m/s, angular=%.3f rad/s",
+      linear_velocity_mps_, angular_velocity_radps_);
+  }
 }
 
 void MotorControlNode::control_callback()
@@ -166,7 +210,9 @@ void MotorControlNode::control_callback()
       publish_motor_rpm(0.0, 0.0);
       watchdog_stopped_ = true;
       if (command_received_) {
-        RCLCPP_WARN(get_logger(), "Command watchdog expired; requesting zero motor speed");
+        if (log_enabled_) {
+          RCLCPP_WARN(get_logger(), "Command watchdog expired; requesting zero motor speed");
+        }
       }
     }
     return;
@@ -174,6 +220,11 @@ void MotorControlNode::control_callback()
 
   const auto motor_rpm =
     kinematics_->twist_to_motor_rpm(linear_velocity_mps_, angular_velocity_radps_);
+  if (log_enabled_) {
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 1000, "Control update: target left=%.2f RPM, right=%.2f RPM",
+      motor_rpm.left, motor_rpm.right);
+  }
   publish_motor_rpm(motor_rpm.left, motor_rpm.right);
 }
 
@@ -182,6 +233,11 @@ void MotorControlNode::publish_motor_rpm(double left_rpm, double right_rpm)
   std_msgs::msg::Float64MultiArray message;
   message.data = {left_rpm, right_rpm};
   motor_rpm_publisher_->publish(std::move(message));
+  if (log_enabled_) {
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 1000, "Published RPM target: left=%.2f, right=%.2f",
+      left_rpm, right_rpm);
+  }
 
   if (!enable_can_ || !motion_commands_enabled_) {
     return;
@@ -189,17 +245,24 @@ void MotorControlNode::publish_motor_rpm(double left_rpm, double right_rpm)
 
   const auto frame = MotorCanProtocol::encode_wheel_speeds(left_rpm, right_rpm);
   if (!frame) {
-    RCLCPP_ERROR_THROTTLE(
-      get_logger(), *get_clock(), 1000,
-      "Cannot encode motor RPM command (left=%.3f, right=%.3f)", left_rpm, right_rpm);
+    if (log_enabled_) {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Cannot encode motor RPM command (left=%.3f, right=%.3f)", left_rpm, right_rpm);
+    }
     return;
   }
 
   std::string error_message;
   if (!can_transport_->send_command(*frame, error_message)) {
-    RCLCPP_ERROR_THROTTLE(
-      get_logger(), *get_clock(), 1000, "CAN command transmission failed: %s",
-      error_message.c_str());
+    if (log_enabled_) {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 1000, "CAN command transmission failed: %s",
+        error_message.c_str());
+    }
+  } else if (log_enabled_) {
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 1000, "CAN speed command transmitted on 0x%03X", frame->id);
   }
 }
 
@@ -214,25 +277,31 @@ void MotorControlNode::receive_can_frames()
       return;
     }
     if (receive_status == ReceiveStatus::kError) {
-      RCLCPP_ERROR_THROTTLE(
-        get_logger(), *get_clock(), 1000, "CAN receive failed: %s", error_message.c_str());
+      if (log_enabled_) {
+        RCLCPP_ERROR_THROTTLE(
+          get_logger(), *get_clock(), 1000, "CAN receive failed: %s", error_message.c_str());
+      }
       return;
     }
 
     const auto decoded = MotorCanProtocol::decode(frame);
     if (!decoded) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 1000,
-        "Ignoring malformed CAN frame 0x%03X (decode status %u)", frame.id,
-        static_cast<unsigned int>(decoded.status));
+      if (log_enabled_) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "Ignoring malformed CAN frame 0x%03X (decode status %u)", frame.id,
+          static_cast<unsigned int>(decoded.status));
+      }
       continue;
     }
 
     const auto stamp = now();
     if (const auto * reply = std::get_if<FirmwareReply>(&*decoded.message)) {
-      RCLCPP_INFO(
-        get_logger(), "Motor-controller firmware identifier: %s",
-        reply->identifier.c_str());
+      if (log_enabled_) {
+        RCLCPP_INFO(
+          get_logger(), "Motor-controller firmware identifier: %s",
+          reply->identifier.c_str());
+      }
     } else if (const auto * reply = std::get_if<WheelSpeedsReply>(&*decoded.message)) {
       latest_wheel_speeds_ = *reply;
       last_feedback_time_ = std::chrono::steady_clock::now();
@@ -251,19 +320,23 @@ void MotorControlNode::receive_can_frames()
     } else if (const auto * report = std::get_if<MotorFaultReport>(&*decoded.message)) {
       latest_motor_fault_ = *report;
       fault_latched_ = true;
-      RCLCPP_ERROR(
-        get_logger(), "Motor %u reported fault mask 0x%04X",
-        static_cast<unsigned int>(report->motor),
-        static_cast<unsigned int>(report->fault_mask));
+      if (log_enabled_) {
+        RCLCPP_ERROR(
+          get_logger(), "Motor %u reported fault mask 0x%04X",
+          static_cast<unsigned int>(report->motor),
+          static_cast<unsigned int>(report->fault_mask));
+      }
       latch_safety_stop("motor fault report");
       publish_motor_fault(*report);
       publish_diagnostics();
     }
   }
 
-  RCLCPP_WARN_THROTTLE(
-    get_logger(), *get_clock(), 1000,
-    "CAN receive backlog exceeded %zu frames in one poll", kMaximumFramesPerPoll);
+  if (log_enabled_) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "CAN receive backlog exceeded %zu frames in one poll", kMaximumFramesPerPoll);
+  }
 }
 
 void MotorControlNode::enable_motors(
@@ -271,14 +344,23 @@ void MotorControlNode::enable_motors(
   std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
   static_cast<void>(request);
+  if (log_enabled_) {
+    RCLCPP_INFO(get_logger(), "enable_motors service requested");
+  }
   if (!enable_can_) {
     response->success = false;
     response->message = "SocketCAN is disabled";
+    if (log_enabled_) {
+      RCLCPP_WARN(get_logger(), "Enable rejected: %s", response->message.c_str());
+    }
     return;
   }
   if (fault_latched_ || feedback_timeout_latched_) {
     response->success = false;
     response->message = "A safety condition is latched; call reset_faults before enabling";
+    if (log_enabled_) {
+      RCLCPP_WARN(get_logger(), "Enable rejected: %s", response->message.c_str());
+    }
     return;
   }
 
@@ -295,6 +377,9 @@ void MotorControlNode::enable_motors(
       send_control_command(ControlCommand::kEmergencyStop, stop_error);
       response->success = false;
       response->message = "Enable sequence failed: " + error_message;
+      if (log_enabled_) {
+        RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
+      }
       return;
     }
   }
@@ -306,6 +391,9 @@ void MotorControlNode::enable_motors(
     send_control_command(ControlCommand::kEmergencyStop, stop_error);
     response->success = false;
     response->message = "Could not send initial zero-speed command: " + error_message;
+    if (log_enabled_) {
+      RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
+    }
     return;
   }
 
@@ -315,6 +403,9 @@ void MotorControlNode::enable_motors(
   motion_commands_enabled_ = true;
   response->success = true;
   response->message = "Enable sequence transmitted; controller acknowledgement is unavailable";
+  if (log_enabled_) {
+    RCLCPP_INFO(get_logger(), "Motors enabled; physical speed commands are now allowed");
+  }
 }
 
 void MotorControlNode::stop_motors(
@@ -322,12 +413,20 @@ void MotorControlNode::stop_motors(
   std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
   static_cast<void>(request);
+  if (log_enabled_) {
+    RCLCPP_INFO(get_logger(), "stop_motors service requested");
+  }
   motion_commands_enabled_ = false;
   command_received_ = false;
   std::string error_message;
   response->success = send_control_command(ControlCommand::kStop, error_message);
   response->message = response->success ?
     "Stop command transmitted; controller acknowledgement is unavailable" : error_message;
+  if (log_enabled_) {
+    RCLCPP_INFO(
+      get_logger(), "Stop request %s: %s", response->success ? "succeeded" : "failed",
+      response->message.c_str());
+  }
 }
 
 void MotorControlNode::reset_faults(
@@ -335,12 +434,18 @@ void MotorControlNode::reset_faults(
   std::shared_ptr<std_srvs::srv::Trigger::Response> response)
 {
   static_cast<void>(request);
+  if (log_enabled_) {
+    RCLCPP_INFO(get_logger(), "reset_faults service requested");
+  }
   motion_commands_enabled_ = false;
   command_received_ = false;
   std::string error_message;
   response->success = send_control_command(ControlCommand::kResetFaults, error_message);
   if (!response->success) {
     response->message = error_message;
+    if (log_enabled_) {
+      RCLCPP_ERROR(get_logger(), "Fault reset failed: %s", error_message.c_str());
+    }
     return;
   }
 
@@ -350,12 +455,19 @@ void MotorControlNode::reset_faults(
   last_feedback_time_ = std::chrono::steady_clock::now();
   response->message =
     "Fault reset transmitted; controller acknowledgement is unavailable; enable is still required";
+  if (log_enabled_) {
+    RCLCPP_INFO(get_logger(), "Safety latches cleared; motors remain disabled");
+  }
 }
 
 void MotorControlNode::set_emergency_stop(
   const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
   std::shared_ptr<std_srvs::srv::SetBool::Response> response)
 {
+  if (log_enabled_) {
+    RCLCPP_INFO(
+      get_logger(), "emergency_stop service requested: %s", request->data ? "engage" : "release");
+  }
   motion_commands_enabled_ = false;
   command_received_ = false;
   const auto command = request->data ?
@@ -364,12 +476,18 @@ void MotorControlNode::set_emergency_stop(
   response->success = send_control_command(command, error_message);
   if (!response->success) {
     response->message = error_message;
+    if (log_enabled_) {
+      RCLCPP_ERROR(get_logger(), "Emergency-stop request failed: %s", error_message.c_str());
+    }
     return;
   }
 
   response->message = request->data ?
     "Emergency-stop command transmitted (ramp-stop behavior)" :
     "Emergency-stop release transmitted; enable_motors is still required";
+  if (log_enabled_) {
+    RCLCPP_INFO(get_logger(), "%s", response->message.c_str());
+  }
 }
 
 bool MotorControlNode::send_control_command(
@@ -384,7 +502,17 @@ bool MotorControlNode::send_control_command(
     error_message = "Invalid motor-control command";
     return false;
   }
-  return can_transport_->send_command(*frame, error_message);
+  const bool sent = can_transport_->send_command(*frame, error_message);
+  if (log_enabled_) {
+    if (sent) {
+      RCLCPP_INFO(get_logger(), "CAN control command sent: %s", control_command_name(command));
+    } else {
+      RCLCPP_ERROR(
+        get_logger(), "CAN control command failed (%s): %s", control_command_name(command),
+        error_message.c_str());
+    }
+  }
+  return sent;
 }
 
 void MotorControlNode::check_feedback_timeout(std::chrono::steady_clock::time_point now)
@@ -396,7 +524,9 @@ void MotorControlNode::check_feedback_timeout(std::chrono::steady_clock::time_po
   }
 
   feedback_timeout_latched_ = true;
-  RCLCPP_ERROR(get_logger(), "Motor feedback timed out; latching an emergency stop");
+  if (log_enabled_) {
+    RCLCPP_ERROR(get_logger(), "Motor feedback timed out; latching an emergency stop");
+  }
   latch_safety_stop("feedback timeout");
   publish_diagnostics();
 }
@@ -407,14 +537,23 @@ void MotorControlNode::latch_safety_stop(const char * reason)
   motion_commands_enabled_ = false;
   command_received_ = false;
   if (!was_enabled) {
+    if (log_enabled_) {
+      RCLCPP_INFO(get_logger(), "Safety stop already gated (%s)", reason);
+    }
     return;
+  }
+
+  if (log_enabled_) {
+    RCLCPP_WARN(get_logger(), "Latching safety stop: %s", reason);
   }
 
   std::string error_message;
   if (!send_control_command(ControlCommand::kEmergencyStop, error_message)) {
-    RCLCPP_ERROR(
-      get_logger(), "Failed to transmit emergency stop after %s: %s", reason,
-      error_message.c_str());
+    if (log_enabled_) {
+      RCLCPP_ERROR(
+        get_logger(), "Failed to transmit emergency stop after %s: %s", reason,
+        error_message.c_str());
+    }
   }
 }
 
@@ -427,6 +566,11 @@ void MotorControlNode::publish_wheel_speeds(
   std_msgs::msg::Float64MultiArray speed_message;
   speed_message.data = {wheel_rpm.left, wheel_rpm.right};
   wheel_speed_publisher_->publish(std::move(speed_message));
+  if (log_enabled_) {
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 1000, "Wheel-speed feedback: left=%.2f RPM, right=%.2f RPM",
+      wheel_rpm.left, wheel_rpm.right);
+  }
 
   sensor_msgs::msg::JointState joint_message;
   joint_message.header.stamp = stamp;
@@ -447,6 +591,12 @@ void MotorControlNode::publish_encoder_deltas(const EncoderDeltasReply & reply)
     static_cast<std::int32_t>(wheel_delta.left),
     static_cast<std::int32_t>(wheel_delta.right)};
   encoder_delta_publisher_->publish(std::move(message));
+  if (log_enabled_) {
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 1000, "Encoder delta: left=%d, right=%d counts",
+      static_cast<std::int32_t>(wheel_delta.left),
+      static_cast<std::int32_t>(wheel_delta.right));
+  }
 }
 
 void MotorControlNode::update_encoder_odometry(
@@ -461,6 +611,11 @@ void MotorControlNode::update_encoder_odometry(
     left_joint_position_rad_ = wheel_position.left * radians_per_count;
     right_joint_position_rad_ = wheel_position.right * radians_per_count;
     encoder_initialized_ = true;
+    if (log_enabled_) {
+      RCLCPP_INFO(
+        get_logger(), "Odometry initialized from encoder positions: M1=%d, M2=%d",
+        report.m1_position, report.m2_position);
+    }
   } else {
     const auto m1_delta = DifferentialDriveKinematics::wrapped_encoder_delta(
       report.m1_position, previous_m1_position_);
@@ -478,11 +633,13 @@ void MotorControlNode::update_encoder_odometry(
     if (std::abs(wheel_delta.left) > maximum_plausible_delta ||
       std::abs(wheel_delta.right) > maximum_plausible_delta)
     {
-      RCLCPP_WARN(
-        get_logger(),
-        "Rebasing after implausible encoder jump (left=%lld, right=%lld counts)",
-        static_cast<long long>(wheel_delta.left),
-        static_cast<long long>(wheel_delta.right));
+      if (log_enabled_) {
+        RCLCPP_WARN(
+          get_logger(),
+          "Rebasing after implausible encoder jump (left=%lld, right=%lld counts)",
+          static_cast<long long>(wheel_delta.left),
+          static_cast<long long>(wheel_delta.right));
+      }
       return;
     }
 
@@ -531,6 +688,13 @@ void MotorControlNode::update_encoder_odometry(
   odometry.pose.covariance[35] = 0.05;
   odometry.twist.covariance = odometry.pose.covariance;
   odometry_publisher_->publish(odometry);
+  if (log_enabled_) {
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "Odometry: x=%.3f m, y=%.3f m, yaw=%.3f rad, linear=%.3f m/s, angular=%.3f rad/s",
+      odom_x_m_, odom_y_m_, odom_yaw_rad_, odometry.twist.twist.linear.x,
+      odometry.twist.twist.angular.z);
+  }
 
   sensor_msgs::msg::JointState joint_message;
   joint_message.header.stamp = stamp;
@@ -559,6 +723,11 @@ void MotorControlNode::publish_motor_fault(const MotorFaultReport & report)
     static_cast<std::uint32_t>(report.motor),
     static_cast<std::uint32_t>(report.fault_mask)};
   motor_fault_publisher_->publish(std::move(message));
+  if (log_enabled_) {
+    RCLCPP_INFO(
+      get_logger(), "Published motor fault: motor=%u, mask=0x%04X",
+      static_cast<unsigned int>(report.motor), static_cast<unsigned int>(report.fault_mask));
+  }
 }
 
 void MotorControlNode::publish_diagnostics()
@@ -613,6 +782,14 @@ void MotorControlNode::publish_diagnostics()
 
   array.status.push_back(std::move(status));
   diagnostics_publisher_->publish(std::move(array));
+  if (log_enabled_) {
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 5000,
+      "Diagnostics: CAN=%s, motion=%s, feedback=%s, fault=%s, timeout=%s",
+      enable_can_ ? "on" : "off", motion_commands_enabled_ ? "enabled" : "gated",
+      feedback_received_ ? "received" : "none", fault_latched_ ? "latched" : "clear",
+      feedback_timeout_latched_ ? "latched" : "clear");
+  }
 }
 
 }  // namespace motor_control_g4dual

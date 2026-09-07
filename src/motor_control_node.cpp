@@ -292,7 +292,7 @@ void MotorControlNode::enable_motors(
     if (!send_control_command(command, error_message)) {
       motion_commands_enabled_ = false;
       std::string stop_error;
-      send_control_command(ControlCommand::kEmergencyStopImmediate, stop_error);
+      send_control_command(ControlCommand::kEmergencyStop, stop_error);
       response->success = false;
       response->message = "Enable sequence failed: " + error_message;
       return;
@@ -303,7 +303,7 @@ void MotorControlNode::enable_motors(
   if (!zero_speed || !can_transport_->send_command(*zero_speed, error_message)) {
     motion_commands_enabled_ = false;
     std::string stop_error;
-    send_control_command(ControlCommand::kEmergencyStopImmediate, stop_error);
+    send_control_command(ControlCommand::kEmergencyStop, stop_error);
     response->success = false;
     response->message = "Could not send initial zero-speed command: " + error_message;
     return;
@@ -359,7 +359,7 @@ void MotorControlNode::set_emergency_stop(
   motion_commands_enabled_ = false;
   command_received_ = false;
   const auto command = request->data ?
-    ControlCommand::kEmergencyStopImmediate : ControlCommand::kEnableOperation;
+    ControlCommand::kEmergencyStop : ControlCommand::kEnableOperation;
   std::string error_message;
   response->success = send_control_command(command, error_message);
   if (!response->success) {
@@ -368,7 +368,7 @@ void MotorControlNode::set_emergency_stop(
   }
 
   response->message = request->data ?
-    "Immediate emergency-stop command transmitted" :
+    "Emergency-stop command transmitted (ramp-stop behavior)" :
     "Emergency-stop release transmitted; enable_motors is still required";
 }
 
@@ -411,7 +411,7 @@ void MotorControlNode::latch_safety_stop(const char * reason)
   }
 
   std::string error_message;
-  if (!send_control_command(ControlCommand::kEmergencyStopImmediate, error_message)) {
+  if (!send_control_command(ControlCommand::kEmergencyStop, error_message)) {
     RCLCPP_ERROR(
       get_logger(), "Failed to transmit emergency stop after %s: %s", reason,
       error_message.c_str());

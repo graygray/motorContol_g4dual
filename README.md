@@ -30,7 +30,7 @@ encoder positions (`0x481`), and motor-fault reports (`0x381`).
 |---|---|---|
 | `enable_motors` | `std_srvs/srv/Trigger` | Send the staged enable sequence and an initial zero-speed command |
 | `stop_motors` | `std_srvs/srv/Trigger` | Stop motion and gate further physical speed commands |
-| `emergency_stop` | `std_srvs/srv/SetBool` | `true` requests immediate stop; `false` releases the hold without re-enabling motion |
+| `emergency_stop` | `std_srvs/srv/SetBool` | `true` sends the original EMO stop command (`0x02`), which uses ramp-stop behavior; `false` releases the hold without re-enabling motion |
 | `reset_faults` | `std_srvs/srv/Trigger` | Request fault reset and clear upper-layer safety latches |
 
 The node clamps targets to `max_motor_speed_rpm` and publishes zero RPM after
@@ -53,8 +53,8 @@ SocketCAN support requires Linux. If CAN is explicitly enabled and the named
 interface cannot be opened, node startup fails instead of silently continuing
 in dry-run mode. Physical speed commands remain gated until `enable_motors`
 succeeds. A motor-fault report or feedback timeout closes that gate and sends
-an immediate emergency-stop command. Shutdown sends zero RPM and then stop
-before closing the CAN socket.
+the original EMO stop command, which uses ramp-stop behavior. Shutdown sends
+zero RPM and then stop before closing the CAN socket.
 
 The upper layer maps Motor 1 to the left wheel and Motor 2 to the right wheel.
 Direction inversion is applied consistently to commands, feedback, joint

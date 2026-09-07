@@ -36,11 +36,18 @@ TEST(MotorCanProtocol, RejectsInvalidSpeeds)
 
 TEST(MotorCanProtocol, EncodesSafetyControls)
 {
-  const auto immediate =
-    MotorCanProtocol::encode_control(ControlCommand::kEmergencyStopImmediate);
-  ASSERT_TRUE(immediate);
+  const auto emergency_stop =
+    MotorCanProtocol::encode_control(ControlCommand::kEmergencyStop);
+  ASSERT_TRUE(emergency_stop);
   EXPECT_EQ(
-    immediate->data,
+    emergency_stop->data,
+    (std::array<std::uint8_t, 8U>{0x2BU, 0x40U, 0x60U, 0U, 0x02U, 0U, 0U, 0U}));
+
+  const auto emergency_stop_ramp =
+    MotorCanProtocol::encode_control(ControlCommand::kEmergencyStopRamp);
+  ASSERT_TRUE(emergency_stop_ramp);
+  EXPECT_EQ(
+    emergency_stop_ramp->data,
     (std::array<std::uint8_t, 8U>{0x2BU, 0x40U, 0x60U, 0U, 0x03U, 0U, 0U, 0U}));
 
   const auto stop = MotorCanProtocol::encode_control(ControlCommand::kStop);

@@ -96,23 +96,40 @@ ROS topics still use physical RPM and the speed limit remains 135 RPM.
 Other values are rejected. Restart the node to change the resolution.
 The launch argument overrides the value in the YAML configuration.
 
-Code-flow logging is disabled by default. Enable it when launching the node:
+Informational event logging defaults to `false`. Warnings and errors are always
+submitted to the ROS logger, independently of `info`. Normal ROS severity
+filtering still applies. Enable informational events at startup with:
 
 ```bash
-ros2 launch motor_control_g4dual motor_control.launch.py log:=true
+ros2 launch motor_control_g4dual motor_control.launch.py info:=true
+ros2 run motor_control_g4dual motor_control_node --info
+ros2 run motor_control_g4dual motor_control_node --info=false
 ```
 
-When running the executable directly, `--log` enables logging and an explicit
-Boolean value can enable or disable it:
+Change the Boolean ROS parameter while the node is running (no restart):
 
 ```bash
-ros2 run motor_control_g4dual motor_control_node --log
-ros2 run motor_control_g4dual motor_control_node --log=false
+ros2 param set /motor_control info true
+ros2 param set /motor_control info false
+ros2 param get /motor_control info
 ```
 
-Accepted values are `true`/`false`, `1`/`0`, and `on`/`off`. Repetitive control,
-feedback, odometry, and diagnostics messages are throttled to keep the output
-readable.
+`--info` sets the initial default; a ROS parameter override such as
+`--ros-args -p info:=true` takes precedence. CLI Boolean values accept
+`true`/`false`, `1`/`0`, and `on`/`off`. The old `--log` and launch `log:=`
+options remain aliases for the initial `info` setting; they no longer suppress
+warnings/errors or enable periodic telemetry.
+
+Repetitive control, feedback, odometry, and diagnostics messages now use
+throttled `DEBUG` logging, independently of `info`. To see them during debugging:
+
+```bash
+ros2 run motor_control_g4dual motor_control_node --ros-args --log-level motor_control:=debug
+```
+
+Changing `info` affects subsequent informational events only; it does not replay
+past events or enable periodic telemetry. Topic publishing and safety checks
+continue regardless of logging settings.
 
 For a dry-run command:
 

@@ -20,7 +20,12 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "log",
                 default_value="false",
-                description="Enable motor-control code-flow log messages",
+                description="Legacy alias for the initial info setting",
+            ),
+            DeclareLaunchArgument(
+                "info",
+                default_value=LaunchConfiguration("log"),
+                description="Enable informational events (runtime parameter: info)",
             ),
             DeclareLaunchArgument(
                 "rpm_resolution",
@@ -39,7 +44,7 @@ def generate_launch_description():
                         LaunchConfiguration("rpm_resolution"), value_type=float
                     )},
                 ],
-                arguments=["--log", LaunchConfiguration("log")],
+                arguments=["--info", LaunchConfiguration("info")],
             )
         ]
     )

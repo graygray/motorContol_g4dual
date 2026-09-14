@@ -32,28 +32,29 @@ bool parse_bool(std::string value, bool & result)
 
 int main(int argc, char * argv[])
 {
-  bool log_enabled = false;
+  bool info_enabled = false;
   std::vector<char *> ros_arguments;
   ros_arguments.reserve(static_cast<std::size_t>(argc));
   ros_arguments.push_back(argv[0]);
 
   for (int index = 1; index < argc; ++index) {
     const std::string argument(argv[index]);
-    if (argument == "--log") {
-      log_enabled = true;
+    if (argument == "--info" || argument == "--log") {
+      info_enabled = true;
       if (index + 1 < argc) {
         bool requested_value = false;
         if (parse_bool(argv[index + 1], requested_value)) {
-          log_enabled = requested_value;
+          info_enabled = requested_value;
           ++index;
         }
       }
       continue;
     }
-    constexpr char log_prefix[] = "--log=";
-    if (argument.rfind(log_prefix, 0) == 0) {
-      if (!parse_bool(argument.substr(sizeof(log_prefix) - 1U), log_enabled)) {
-        std::cerr << "Invalid --log value; use true/false, 1/0, or on/off" << std::endl;
+    const auto value_offset = argument.rfind("--info=", 0) == 0 ? 7U :
+      (argument.rfind("--log=", 0) == 0 ? 6U : 0U);
+    if (value_offset != 0U) {
+      if (!parse_bool(argument.substr(value_offset), info_enabled)) {
+        std::cerr << "Invalid --info/--log value; use true/false, 1/0, or on/off" << std::endl;
         return 2;
       }
       continue;
@@ -64,7 +65,7 @@ int main(int argc, char * argv[])
   int ros_argc = static_cast<int>(ros_arguments.size());
   rclcpp::init(ros_argc, ros_arguments.data());
   rclcpp::spin(
-    std::make_shared<motor_control_g4dual::MotorControlNode>(rclcpp::NodeOptions(), log_enabled));
+    std::make_shared<motor_control_g4dual::MotorControlNode>(rclcpp::NodeOptions(), info_enabled));
   rclcpp::shutdown();
   return 0;
 }

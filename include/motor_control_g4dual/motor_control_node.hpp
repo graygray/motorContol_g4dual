@@ -15,11 +15,11 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
+#include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 #include "std_msgs/msg/int32_multi_array.hpp"
 #include "std_msgs/msg/u_int32_multi_array.hpp"
-#include "std_srvs/srv/set_bool.hpp"
-#include "std_srvs/srv/trigger.hpp"
 #include "tf2_ros/transform_broadcaster.h"
 
 namespace motor_control_g4dual
@@ -37,18 +37,11 @@ private:
   void control_callback();
   void receive_can_frames();
   void publish_motor_rpm(double left_rpm, double right_rpm);
-  void enable_motors(
-    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
-  void stop_motors(
-    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
-  void reset_faults(
-    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
-  void set_emergency_stop(
-    const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
-    std::shared_ptr<std_srvs::srv::SetBool::Response> response);
+  void enable_motors(const std_msgs::msg::Empty::SharedPtr message);
+  void stop_motors(const std_msgs::msg::Empty::SharedPtr message);
+  void reset_faults(const std_msgs::msg::Empty::SharedPtr message);
+  void set_emergency_stop(const std_msgs::msg::Bool::SharedPtr message);
+  void report_control_result(const char * command, bool success, const std::string & message);
   bool send_control_command(ControlCommand command, std::string & error_message);
   void check_feedback_timeout(std::chrono::steady_clock::time_point now);
   void latch_safety_stop(const char * reason);
@@ -115,10 +108,13 @@ private:
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr can_receive_timer_;
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr enable_service_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_service_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_faults_service_;
-  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr emergency_stop_service_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr enable_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr stop_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr reset_faults_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_subscription_;
+  std::string last_control_command_;
+  std::optional<bool> last_control_success_;
+  std::string last_control_message_;
 };
 
 }  // namespace motor_control_g4dual

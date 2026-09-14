@@ -15,7 +15,6 @@ find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(std_srvs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(Threads REQUIRED)
 
@@ -68,7 +67,6 @@ ament_target_dependencies(motor_control_node
   rclcpp
   sensor_msgs
   std_msgs
-  std_srvs
   tf2_ros
 )
 
@@ -109,6 +107,21 @@ if(BUILD_TESTING)
     test/test_motor_can_protocol.cpp
   )
   target_link_libraries(test_motor_can_protocol motor_can_protocol)
+
+  ament_add_gtest(test_motor_control_node
+    test/test_motor_control_node.cpp
+    src/motor_control_node.cpp
+    TIMEOUT 60
+  )
+  target_compile_features(test_motor_control_node PUBLIC cxx_std_17)
+  target_link_libraries(test_motor_control_node
+    differential_drive_kinematics
+    motor_can_protocol
+    socket_can_transport
+  )
+  ament_target_dependencies(test_motor_control_node
+    diagnostic_msgs geometry_msgs nav_msgs rclcpp sensor_msgs std_msgs tf2_ros
+  )
 
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     ament_add_gtest(test_socket_can_transport

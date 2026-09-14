@@ -20,7 +20,6 @@ ROS_BUILD_DEPENDS = " \
     rclcpp \
     sensor-msgs \
     std-msgs \
-    std-srvs \
     tf2-ros \
 "
 
@@ -35,7 +34,6 @@ ROS_EXPORT_DEPENDS = " \
     rclcpp \
     sensor-msgs \
     std-msgs \
-    std-srvs \
     tf2-ros \
 "
 
@@ -51,7 +49,6 @@ ROS_EXEC_DEPENDS = " \
     rclcpp \
     sensor-msgs \
     std-msgs \
-    std-srvs \
     tf2-ros \
 "
 

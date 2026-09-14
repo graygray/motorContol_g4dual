@@ -136,23 +136,20 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool inf
     std::bind(&MotorControlNode::control_callback, this));
   diagnostics_timer_ = create_wall_timer(
     std::chrono::seconds(1), std::bind(&MotorControlNode::publish_diagnostics, this));
-  enable_service_ = create_service<std_srvs::srv::Trigger>(
-    "enable_motors",
-    std::bind(
-      &MotorControlNode::enable_motors, this, std::placeholders::_1, std::placeholders::_2));
-  stop_service_ = create_service<std_srvs::srv::Trigger>(
-    "stop_motors",
-    std::bind(
-      &MotorControlNode::stop_motors, this, std::placeholders::_1, std::placeholders::_2));
-  reset_faults_service_ = create_service<std_srvs::srv::Trigger>(
-    "reset_faults",
-    std::bind(
-      &MotorControlNode::reset_faults, this, std::placeholders::_1, std::placeholders::_2));
-  emergency_stop_service_ = create_service<std_srvs::srv::SetBool>(
-    "emergency_stop",
-    std::bind(
-      &MotorControlNode::set_emergency_stop, this,
-      std::placeholders::_1, std::placeholders::_2));
+  // Control events must not be replayed to a restarted node.
+  const auto control_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
+  enable_subscription_ = create_subscription<std_msgs::msg::Empty>(
+    "enable_motors", control_qos,
+    std::bind(&MotorControlNode::enable_motors, this, std::placeholders::_1));
+  stop_subscription_ = create_subscription<std_msgs::msg::Empty>(
+    "stop_motors", control_qos,
+    std::bind(&MotorControlNode::stop_motors, this, std::placeholders::_1));
+  reset_faults_subscription_ = create_subscription<std_msgs::msg::Empty>(
+    "reset_faults", control_qos,
+    std::bind(&MotorControlNode::reset_faults, this, std::placeholders::_1));
+  emergency_stop_subscription_ = create_subscription<std_msgs::msg::Bool>(
+    "emergency_stop", control_qos,
+    std::bind(&MotorControlNode::set_emergency_stop, this, std::placeholders::_1));
 
   if (get_parameter("info").as_bool()) {
     RCLCPP_INFO(
@@ -325,24 +322,17 @@ void MotorControlNode::receive_can_frames()
     "CAN receive backlog exceeded %zu frames in one poll", kMaximumFramesPerPoll);
 }
 
-void MotorControlNode::enable_motors(
-  const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-  std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+void MotorControlNode::enable_motors(const std_msgs::msg::Empty::SharedPtr message)
 {
-  static_cast<void>(request);
-  if (get_parameter("info").as_bool()) {
-    RCLCPP_INFO(get_logger(), "enable_motors service requested");
-  }
+  static_cast<void>(message);
   if (!enable_can_) {
-    response->success = false;
-    response->message = "SocketCAN is disabled";
-    RCLCPP_WARN(get_logger(), "Enable rejected: %s", response->message.c_str());
+    report_control_result("enable_motors", false, "SocketCAN is disabled");
     return;
   }
   if (fault_latched_ || feedback_timeout_latched_) {
-    response->success = false;
-    response->message = "A safety condition is latched; call reset_faults before enabling";
-    RCLCPP_WARN(get_logger(), "Enable rejected: %s", response->message.c_str());
+    report_control_result(
+      "enable_motors", false,
+      "A safety condition is latched; publish reset_faults before enabling");
     return;
   }
 
@@ -357,9 +347,7 @@ void MotorControlNode::enable_motors(
       motion_commands_enabled_ = false;
       std::string stop_error;
       send_control_command(ControlCommand::kEmergencyStop, stop_error);
-      response->success = false;
-      response->message = "Enable sequence failed: " + error_message;
-      RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
+      report_control_result("enable_motors", false, "Enable sequence failed: " + error_message);
       return;
     }
   }
@@ -369,9 +357,8 @@ void MotorControlNode::enable_motors(
     motion_commands_enabled_ = false;
     std::string stop_error;
     send_control_command(ControlCommand::kEmergencyStop, stop_error);
-    response->success = false;
-    response->message = "Could not send initial zero-speed command: " + error_message;
-    RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
+    report_control_result(
+      "enable_motors", false, "Could not send initial zero-speed command: " + error_message);
     return;
   }
 
@@ -379,49 +366,31 @@ void MotorControlNode::enable_motors(
   command_received_ = false;
   watchdog_stopped_ = false;
   motion_commands_enabled_ = true;
-  response->success = true;
-  response->message = "Enable sequence transmitted; controller acknowledgement is unavailable";
-  if (get_parameter("info").as_bool()) {
-    RCLCPP_INFO(get_logger(), "Motors enabled; physical speed commands are now allowed");
-  }
+  report_control_result(
+    "enable_motors", true,
+    "Enable sequence transmitted; controller acknowledgement is unavailable");
 }
 
-void MotorControlNode::stop_motors(
-  const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-  std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+void MotorControlNode::stop_motors(const std_msgs::msg::Empty::SharedPtr message)
 {
-  static_cast<void>(request);
-  if (get_parameter("info").as_bool()) {
-    RCLCPP_INFO(get_logger(), "stop_motors service requested");
-  }
+  static_cast<void>(message);
   motion_commands_enabled_ = false;
   command_received_ = false;
   std::string error_message;
-  response->success = send_control_command(ControlCommand::kStop, error_message);
-  response->message = response->success ?
-    "Stop command transmitted; controller acknowledgement is unavailable" : error_message;
-  if (!response->success) {
-    RCLCPP_ERROR(get_logger(), "Stop request failed: %s", response->message.c_str());
-  } else if (get_parameter("info").as_bool()) {
-    RCLCPP_INFO(get_logger(), "Stop request succeeded: %s", response->message.c_str());
-  }
+  const bool success = send_control_command(ControlCommand::kStop, error_message);
+  report_control_result(
+    "stop_motors", success, success ?
+    "Stop command transmitted; controller acknowledgement is unavailable" : error_message);
 }
 
-void MotorControlNode::reset_faults(
-  const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-  std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+void MotorControlNode::reset_faults(const std_msgs::msg::Empty::SharedPtr message)
 {
-  static_cast<void>(request);
-  if (get_parameter("info").as_bool()) {
-    RCLCPP_INFO(get_logger(), "reset_faults service requested");
-  }
+  static_cast<void>(message);
   motion_commands_enabled_ = false;
   command_received_ = false;
   std::string error_message;
-  response->success = send_control_command(ControlCommand::kResetFaults, error_message);
-  if (!response->success) {
-    response->message = error_message;
-    RCLCPP_ERROR(get_logger(), "Fault reset failed: %s", error_message.c_str());
+  if (!send_control_command(ControlCommand::kResetFaults, error_message)) {
+    report_control_result("reset_faults", false, error_message);
     return;
   }
 
@@ -429,39 +398,41 @@ void MotorControlNode::reset_faults(
   feedback_timeout_latched_ = false;
   latest_motor_fault_.reset();
   last_feedback_time_ = std::chrono::steady_clock::now();
-  response->message =
-    "Fault reset transmitted; controller acknowledgement is unavailable; enable is still required";
-  if (get_parameter("info").as_bool()) {
-    RCLCPP_INFO(get_logger(), "Safety latches cleared; motors remain disabled");
-  }
+  report_control_result(
+    "reset_faults", true,
+    "Fault reset transmitted; controller acknowledgement is unavailable; enable is still required");
 }
 
-void MotorControlNode::set_emergency_stop(
-  const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
-  std::shared_ptr<std_srvs::srv::SetBool::Response> response)
+void MotorControlNode::set_emergency_stop(const std_msgs::msg::Bool::SharedPtr message)
 {
-  if (get_parameter("info").as_bool()) {
-    RCLCPP_INFO(
-      get_logger(), "emergency_stop service requested: %s", request->data ? "engage" : "release");
-  }
   motion_commands_enabled_ = false;
   command_received_ = false;
-  const auto command = request->data ?
+  const auto command = message->data ?
     ControlCommand::kEmergencyStop : ControlCommand::kEnableOperation;
   std::string error_message;
-  response->success = send_control_command(command, error_message);
-  if (!response->success) {
-    response->message = error_message;
-    RCLCPP_ERROR(get_logger(), "Emergency-stop request failed: %s", error_message.c_str());
+  if (!send_control_command(command, error_message)) {
+    report_control_result("emergency_stop", false, error_message);
     return;
   }
 
-  response->message = request->data ?
+  report_control_result(
+    "emergency_stop", true, message->data ?
     "Emergency-stop command transmitted (ramp-stop behavior)" :
-    "Emergency-stop release transmitted; enable_motors is still required";
-  if (get_parameter("info").as_bool()) {
-    RCLCPP_INFO(get_logger(), "%s", response->message.c_str());
+    "Emergency-stop release transmitted; enable_motors is still required");
+}
+
+void MotorControlNode::report_control_result(
+  const char * command, bool success, const std::string & message)
+{
+  last_control_command_ = command;
+  last_control_success_ = success;
+  last_control_message_ = message;
+  if (!success) {
+    RCLCPP_ERROR(get_logger(), "%s failed: %s", command, message.c_str());
+  } else if (get_parameter("info").as_bool()) {
+    RCLCPP_INFO(get_logger(), "%s: %s", command, message.c_str());
   }
+  publish_diagnostics();
 }
 
 bool MotorControlNode::send_control_command(
@@ -720,6 +691,11 @@ void MotorControlNode::publish_diagnostics()
       item.value = value;
       status.values.push_back(std::move(item));
     };
+  if (last_control_success_.has_value()) {
+    add_value("last_control_command", last_control_command_);
+    add_value("last_control_success", *last_control_success_ ? "true" : "false");
+    add_value("last_control_message", last_control_message_);
+  }
   add_value("can_interface", can_interface_);
   add_value("rpm_resolution", std::to_string(rpm_resolution_));
   add_value("can_enabled", enable_can_ ? "true" : "false");

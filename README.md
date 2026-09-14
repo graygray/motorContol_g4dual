@@ -26,12 +26,24 @@ encoder positions (`0x481`), and motor-fault reports (`0x381`).
 | Publish | `odom` | `nav_msgs/msg/Odometry` | Differential-drive wheel odometry |
 | Publish | `diagnostics` | `diagnostic_msgs/msg/DiagnosticArray` | CAN and safety state |
 
-| Service | Type | Purpose |
+All motor commands use topics; the former motor-control services have been removed.
+
+| Subscribe topic | Type | Purpose |
 |---|---|---|
-| `enable_motors` | `std_srvs/srv/Trigger` | Send the staged enable sequence and an initial zero-speed command |
-| `stop_motors` | `std_srvs/srv/Trigger` | Stop motion and gate further physical speed commands |
-| `emergency_stop` | `std_srvs/srv/SetBool` | `true` sends the original EMO stop command (`0x02`), which uses ramp-stop behavior; `false` releases the hold without re-enabling motion |
-| `reset_faults` | `std_srvs/srv/Trigger` | Request fault reset and clear upper-layer safety latches |
+| `enable_motors` | `std_msgs/msg/Empty` | Send the staged enable sequence and an initial zero-speed command |
+| `stop_motors` | `std_msgs/msg/Empty` | Stop motion and gate further physical speed commands |
+| `emergency_stop` | `std_msgs/msg/Bool` | `true` sends the original EMO stop command (`0x02`), which uses ramp-stop behavior; `false` releases the hold without re-enabling motion |
+| `reset_faults` | `std_msgs/msg/Empty` | Request fault reset and clear upper-layer safety latches |
+
+Control-event subscriptions use reliable, volatile QoS with a queue depth of 10.
+Publish each event once with volatile durability; do not periodically repeat or
+retain enable/reset commands. Messages published before a subscriber connects
+are not replayed. Topic publication does not return a success response.
+The node publishes `diagnostics` immediately after each control event and once
+per second, including `last_control_command`, `last_control_success`, and
+`last_control_message` after the first event. These fields describe the latest
+local command result, not a controller acknowledgement or a per-client reply.
+Failures are also logged even when `info` is false.
 
 The node clamps targets to `max_motor_speed_rpm` and publishes zero RPM after
 `command_timeout_ms` without a valid command. See `config/motor_control.yaml`
@@ -139,6 +151,24 @@ ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
 ros2 topic echo /motor_rpm_command
 ```
 
+Publish motor-control events using the same CLI pattern:
+
+```bash
+ros2 topic pub --once /enable_motors std_msgs/msg/Empty '{}'
+ros2 topic pub --once /stop_motors std_msgs/msg/Empty '{}'
+ros2 topic pub --once /reset_faults std_msgs/msg/Empty '{}'
+ros2 topic pub --once /emergency_stop std_msgs/msg/Bool '{data: true}'
+ros2 topic pub --once /emergency_stop std_msgs/msg/Bool '{data: false}'
+ros2 topic echo /diagnostics
+```
+
+These are individual command examples, not a startup sequence. After fault
+reset or emergency-stop release, publish `enable_motors` separately, check
+`diagnostics` for the result, then send fresh `cmd_vel` messages. Commands on
+different topics have no shared ordering; wait for each result before sending
+the next dependent command. In dry-run mode, control events report failure
+because SocketCAN is disabled.
+
 Confirm `wheel_radius_m`, `wheel_separation_m`, `gear_ratio`, and motor
 inversion against the real platform before any hardware transport is enabled.
 
@@ -146,7 +176,8 @@ inversion against the real platform before any hardware transport is enabled.
 
 The normal test run covers differential-drive conversion, proportional RPM
 limiting, direction inversion, encoder rollover, CAN command encoding, reply
-decoding, and malformed-frame rejection:
+decoding, malformed-frame rejection, and topic command delivery with dry-run
+failure diagnostics (including both emergency-stop values):
 
 ```bash
 colcon test --packages-select motor_control_g4dual
@@ -183,7 +214,7 @@ back through the filtered receive and decode path. It never enables motors.
 4. **CAN receive and decoding (complete):** filtered nonblocking reception and
    typed decoding for firmware, measured speed, encoder delta, absolute encoder
    position, and motor-fault frames on `0x581`, `0x481`, and `0x381`.
-5. **Lifecycle and safety (complete):** explicit enable/stop/reset services,
+5. **Lifecycle and safety (complete):** explicit enable/stop/reset topics,
    emergency-stop behavior, feedback timeout, command gating, fault latching,
    and safe shutdown that requests zero speed before stopping the drive.
 6. **Feedback and odometry (complete):** publish measured wheel speed, encoder

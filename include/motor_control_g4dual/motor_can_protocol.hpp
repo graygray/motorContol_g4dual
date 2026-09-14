@@ -139,12 +139,17 @@ public:
   static constexpr std::uint16_t kFaultReportId = 0x381U;
   static constexpr double kMaxSpeedRpm = 135.0;
   static constexpr double kSpeedUnitsPerRpm = 10.0;
+  static constexpr double kDefaultRpmResolution = 1.0 / kSpeedUnitsPerRpm;
+
+  static bool is_valid_rpm_resolution(double rpm_resolution);
   static constexpr double kEncoderCountsPerRevolution = 16384.0;
 
   static std::optional<CanFrame> encode_motor_speed(
-    MotorSelector motor, double speed_rpm);
+    MotorSelector motor, double speed_rpm,
+    double rpm_resolution = kDefaultRpmResolution);
   static std::optional<CanFrame> encode_wheel_speeds(
-    double m1_speed_rpm, double m2_speed_rpm);
+    double m1_speed_rpm, double m2_speed_rpm,
+    double rpm_resolution = kDefaultRpmResolution);
   static std::optional<CanFrame> encode_jerk_limit_profile(JerkLimitProfile profile);
   static std::optional<CanFrame> encode_movement_method(MovementMethod method);
   static std::optional<CanFrame> encode_pid_set(PidSet pid_set);
@@ -157,10 +162,12 @@ public:
   static CanFrame encode_firmware_version_request();
   static CanFrame encode_wheel_speeds_request();
   static CanFrame encode_encoder_deltas_request();
-  static DecodeResult decode(const CanFrame & frame);
+  static DecodeResult decode(
+    const CanFrame & frame, double rpm_resolution = kDefaultRpmResolution);
 
 private:
-  static std::optional<std::int16_t> encode_speed_units(double speed_rpm);
+  static std::optional<std::int16_t> encode_speed_units(
+    double speed_rpm, double rpm_resolution);
   static CanFrame make_frame(const std::array<std::uint8_t, 8U> & data);
 };
 

@@ -34,6 +34,65 @@ TEST(MotorCanProtocol, RejectsInvalidSpeeds)
   EXPECT_TRUE(MotorCanProtocol::encode_wheel_speeds(-135.0, 135.0));
 }
 
+TEST(MotorCanProtocol, EncodesWholeRpmAndRoundsSignedSpeeds)
+{
+  const auto frame = MotorCanProtocol::encode_wheel_speeds(12.5, -45.5, 1.0);
+  ASSERT_TRUE(frame);
+  EXPECT_EQ(
+    frame->data,
+    (std::array<std::uint8_t, 8U>{
+      0x23U, 0xFFU, 0x60U, 0x03U, 0x0DU, 0U, 0xD2U, 0xFFU}));
+  const auto single = MotorCanProtocol::encode_motor_speed(MotorSelector::kM2, -12.5, 1.0);
+  ASSERT_TRUE(single);
+  EXPECT_EQ(single->data[3], 0x02U);
+  EXPECT_EQ(single->data[4], 0xF3U);
+  EXPECT_EQ(single->data[5], 0xFFU);
+}
+
+TEST(MotorCanProtocol, AppliesResolutionToFeedbackOnlyForSpeeds)
+{
+  const CanFrame frame{MotorCanProtocol::kReplyId, 8U,
+    {0x43U, 0x6CU, 0x60U, 0U, 0x7BU, 0U, 0x85U, 0xFFU}};
+  for (const double resolution : {1.0, 0.1}) {
+    const auto decoded = MotorCanProtocol::decode(frame, resolution);
+    ASSERT_TRUE(decoded);
+    const auto speeds = std::get<WheelSpeedsReply>(*decoded.message);
+    EXPECT_DOUBLE_EQ(speeds.m1_speed_rpm, 123.0 * resolution);
+    EXPECT_DOUBLE_EQ(speeds.m2_speed_rpm, -123.0 * resolution);
+    const auto deltas = MotorCanProtocol::decode(
+      {MotorCanProtocol::kReplyId, 8U,
+        {0U, 0x64U, 0x60U, 0U, 0x7BU, 0U, 0x85U, 0xFFU}}, resolution);
+    ASSERT_TRUE(deltas);
+    EXPECT_EQ(std::get<EncoderDeltasReply>(*deltas.message).m1_delta, 123);
+    EXPECT_EQ(std::get<EncoderDeltasReply>(*deltas.message).m2_delta, -123);
+  }
+}
+
+TEST(MotorCanProtocol, PreservesLimitsAtBothResolutions)
+{
+  for (const double resolution : {1.0, 0.1}) {
+    EXPECT_TRUE(MotorCanProtocol::encode_wheel_speeds(-135.0, 135.0, resolution));
+    EXPECT_FALSE(MotorCanProtocol::encode_wheel_speeds(-135.1, 0.0, resolution));
+    EXPECT_FALSE(MotorCanProtocol::encode_wheel_speeds(0.0, 135.1, resolution));
+    EXPECT_FALSE(MotorCanProtocol::encode_wheel_speeds(
+        0.0, std::numeric_limits<double>::infinity(), resolution));
+  }
+}
+
+TEST(MotorCanProtocol, RejectsInvalidResolutions)
+{
+  for (const double resolution : {0.0, -0.1, 0.01, 0.5, 10.0,
+    std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+  {
+    EXPECT_FALSE(MotorCanProtocol::is_valid_rpm_resolution(resolution));
+    EXPECT_FALSE(MotorCanProtocol::encode_wheel_speeds(12.0, -12.0, resolution));
+    EXPECT_FALSE(MotorCanProtocol::encode_motor_speed(MotorSelector::kM1, 12.0, resolution));
+    EXPECT_FALSE(MotorCanProtocol::decode(
+        {MotorCanProtocol::kReplyId, 8U,
+          {0x43U, 0x6CU, 0x60U, 0U, 0U, 0U, 0U, 0U}}, resolution));
+  }
+}
+
 TEST(MotorCanProtocol, EncodesSafetyControls)
 {
   const auto emergency_stop =

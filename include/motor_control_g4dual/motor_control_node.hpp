@@ -73,6 +73,7 @@ private:
   double wheel_separation_m_;
   double gear_ratio_;
   double max_motor_speed_rpm_;
+  double rpm_resolution_;
   bool invert_left_motor_;
   bool invert_right_motor_;
   std::chrono::milliseconds command_timeout_;

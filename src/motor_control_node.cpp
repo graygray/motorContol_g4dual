@@ -66,6 +66,16 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool log
   invert_left_motor_ = declare_parameter<bool>("invert_left_motor", false);
   invert_right_motor_ = declare_parameter<bool>("invert_right_motor", true);
 
+  rcl_interfaces::msg::ParameterDescriptor rpm_resolution_descriptor;
+  rpm_resolution_descriptor.description =
+    "CAN speed resolution in RPM per unit: 1.0 or 0.1; must match controller firmware";
+  rpm_resolution_descriptor.read_only = true;
+  rpm_resolution_ = declare_parameter<double>(
+    "rpm_resolution", MotorCanProtocol::kDefaultRpmResolution, rpm_resolution_descriptor);
+  if (!MotorCanProtocol::is_valid_rpm_resolution(rpm_resolution_)) {
+    throw std::invalid_argument("rpm_resolution must be 1.0 or 0.1 RPM per CAN unit");
+  }
+
   const auto command_timeout_ms = declare_parameter<int>("command_timeout_ms", 500);
   const auto control_period_ms = declare_parameter<int>("control_period_ms", 50);
   const auto can_receive_poll_ms = declare_parameter<int>("can_receive_poll_ms", 50);
@@ -149,9 +159,9 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool log
   if (log_enabled_) {
     RCLCPP_INFO(
       get_logger(),
-      "Node ready: cmd='%s', rpm='%s', CAN=%s, control=%d ms, watchdog=%d ms",
+      "Node ready: cmd='%s', rpm='%s', CAN=%s, control=%d ms, watchdog=%d ms, RPM resolution=%.1f",
       command_topic_.c_str(), motor_rpm_topic_.c_str(), enable_can_ ? "enabled" : "disabled",
-      control_period_ms, command_timeout_ms);
+      control_period_ms, command_timeout_ms, rpm_resolution_);
   }
 }
 
@@ -169,7 +179,7 @@ MotorControlNode::~MotorControlNode()
   }
 
   std::string ignored_error;
-  const auto zero_speed = MotorCanProtocol::encode_wheel_speeds(0.0, 0.0);
+  const auto zero_speed = MotorCanProtocol::encode_wheel_speeds(0.0, 0.0, rpm_resolution_);
   if (zero_speed) {
     can_transport_->send_command(*zero_speed, ignored_error);
   }
@@ -243,7 +253,7 @@ void MotorControlNode::publish_motor_rpm(double left_rpm, double right_rpm)
     return;
   }
 
-  const auto frame = MotorCanProtocol::encode_wheel_speeds(left_rpm, right_rpm);
+  const auto frame = MotorCanProtocol::encode_wheel_speeds(left_rpm, right_rpm, rpm_resolution_);
   if (!frame) {
     if (log_enabled_) {
       RCLCPP_ERROR_THROTTLE(
@@ -284,7 +294,7 @@ void MotorControlNode::receive_can_frames()
       return;
     }
 
-    const auto decoded = MotorCanProtocol::decode(frame);
+    const auto decoded = MotorCanProtocol::decode(frame, rpm_resolution_);
     if (!decoded) {
       if (log_enabled_) {
         RCLCPP_WARN_THROTTLE(
@@ -384,7 +394,7 @@ void MotorControlNode::enable_motors(
     }
   }
 
-  const auto zero_speed = MotorCanProtocol::encode_wheel_speeds(0.0, 0.0);
+  const auto zero_speed = MotorCanProtocol::encode_wheel_speeds(0.0, 0.0, rpm_resolution_);
   if (!zero_speed || !can_transport_->send_command(*zero_speed, error_message)) {
     motion_commands_enabled_ = false;
     std::string stop_error;
@@ -763,6 +773,7 @@ void MotorControlNode::publish_diagnostics()
       status.values.push_back(std::move(item));
     };
   add_value("can_interface", can_interface_);
+  add_value("rpm_resolution", std::to_string(rpm_resolution_));
   add_value("can_enabled", enable_can_ ? "true" : "false");
   add_value("motion_commands_enabled", motion_commands_enabled_ ? "true" : "false");
   add_value("feedback_received", feedback_received_ ? "true" : "false");

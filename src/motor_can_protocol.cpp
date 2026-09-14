@@ -52,16 +52,14 @@ std::int32_t read_int32_little_endian(
   return static_cast<std::int32_t>(static_cast<std::int64_t>(value) - 0x100000000LL);
 }
 
-DecodeResult decode_reply(const CanFrame & frame)
+DecodeResult decode_reply(const CanFrame & frame, double rpm_resolution)
 {
   if (frame.data[0] == 0x43U && frame.data[1] == 0x6CU && frame.data[2] == 0x60U) {
     return {
       DecodeStatus::kSuccess,
       WheelSpeedsReply{
-        static_cast<double>(read_int16_little_endian(frame.data, 4U)) /
-        MotorCanProtocol::kSpeedUnitsPerRpm,
-        static_cast<double>(read_int16_little_endian(frame.data, 6U)) /
-        MotorCanProtocol::kSpeedUnitsPerRpm}};
+        static_cast<double>(read_int16_little_endian(frame.data, 4U)) * rpm_resolution,
+        static_cast<double>(read_int16_little_endian(frame.data, 6U)) * rpm_resolution}};
   }
 
   if (frame.data[0] == 0x00U && frame.data[1] == 0x64U && frame.data[2] == 0x60U) {
@@ -92,13 +90,13 @@ DecodeResult decode_reply(const CanFrame & frame)
 }  // namespace
 
 std::optional<CanFrame> MotorCanProtocol::encode_motor_speed(
-  MotorSelector motor, double speed_rpm)
+  MotorSelector motor, double speed_rpm, double rpm_resolution)
 {
   if (motor != MotorSelector::kM1 && motor != MotorSelector::kM2) {
     return std::nullopt;
   }
 
-  const auto speed_units = encode_speed_units(speed_rpm);
+  const auto speed_units = encode_speed_units(speed_rpm, rpm_resolution);
   if (!speed_units) {
     return std::nullopt;
   }
@@ -109,10 +107,10 @@ std::optional<CanFrame> MotorCanProtocol::encode_motor_speed(
 }
 
 std::optional<CanFrame> MotorCanProtocol::encode_wheel_speeds(
-  double m1_speed_rpm, double m2_speed_rpm)
+  double m1_speed_rpm, double m2_speed_rpm, double rpm_resolution)
 {
-  const auto m1_speed_units = encode_speed_units(m1_speed_rpm);
-  const auto m2_speed_units = encode_speed_units(m2_speed_rpm);
+  const auto m1_speed_units = encode_speed_units(m1_speed_rpm, rpm_resolution);
+  const auto m2_speed_units = encode_speed_units(m2_speed_rpm, rpm_resolution);
   if (!m1_speed_units || !m2_speed_units) {
     return std::nullopt;
   }
@@ -211,8 +209,11 @@ CanFrame MotorCanProtocol::encode_encoder_deltas_request()
   return make_frame({0x43U, 0x64U, 0x60U, kMotorBoth, 0U, 0U, 0U, 0U});
 }
 
-DecodeResult MotorCanProtocol::decode(const CanFrame & frame)
+DecodeResult MotorCanProtocol::decode(const CanFrame & frame, double rpm_resolution)
 {
+  if (!is_valid_rpm_resolution(rpm_resolution)) {
+    return {DecodeStatus::kInvalidPayload, std::nullopt};
+  }
   if (frame.id != kReplyId && frame.id != kEncoderReportId && frame.id != kFaultReportId) {
     return {DecodeStatus::kUnsupportedId, std::nullopt};
   }
@@ -221,7 +222,7 @@ DecodeResult MotorCanProtocol::decode(const CanFrame & frame)
   }
 
   if (frame.id == kReplyId) {
-    return decode_reply(frame);
+    return decode_reply(frame, rpm_resolution);
   }
   if (frame.id == kEncoderReportId) {
     return {
@@ -247,13 +248,21 @@ DecodeResult MotorCanProtocol::decode(const CanFrame & frame)
     MotorFaultReport{static_cast<MotorSelector>(frame.data[0]), fault_mask}};
 }
 
-std::optional<std::int16_t> MotorCanProtocol::encode_speed_units(double speed_rpm)
+bool MotorCanProtocol::is_valid_rpm_resolution(double rpm_resolution)
 {
-  if (!std::isfinite(speed_rpm) || speed_rpm < -kMaxSpeedRpm || speed_rpm > kMaxSpeedRpm) {
+  return rpm_resolution == 1.0 || rpm_resolution == 0.1;
+}
+
+std::optional<std::int16_t> MotorCanProtocol::encode_speed_units(
+  double speed_rpm, double rpm_resolution)
+{
+  if (!is_valid_rpm_resolution(rpm_resolution) || !std::isfinite(speed_rpm) ||
+    speed_rpm < -kMaxSpeedRpm || speed_rpm > kMaxSpeedRpm)
+  {
     return std::nullopt;
   }
 
-  return static_cast<std::int16_t>(std::round(speed_rpm * kSpeedUnitsPerRpm));
+  return static_cast<std::int16_t>(std::round(speed_rpm * (1.0 / rpm_resolution)));
 }
 
 CanFrame MotorCanProtocol::make_frame(const std::array<std::uint8_t, 8U> & data)

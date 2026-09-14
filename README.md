@@ -42,6 +42,7 @@ default 135 RPM limit and 50 ms control period match the current
 | Parameter | Default | Purpose |
 |---|---:|---|
 | `enable_can` | `false` | Enables physical SocketCAN transmission |
+| `rpm_resolution` | `0.1` | Startup-only CAN speed resolution: `1.0` or `0.1` RPM per unit |
 | `can_interface` | `can0` | Linux SocketCAN network-interface name |
 | `can_receive_poll_ms` | `50` | Interval used to drain received CAN frames |
 | `feedback_timeout_ms` | `500` | Enabled-motion timeout for speed/position feedback |
@@ -74,6 +75,26 @@ colcon build --packages-select motor_control_g4dual
 source install/setup.bash
 ros2 launch motor_control_g4dual motor_control.launch.py
 ```
+
+Select the CAN RPM resolution at launch (default: `0.1`):
+
+```bash
+ros2 launch motor_control_g4dual motor_control.launch.py rpm_resolution:=1
+ros2 launch motor_control_g4dual motor_control.launch.py rpm_resolution:=0.1
+```
+
+For direct execution, use a floating-point ROS parameter:
+
+```bash
+ros2 run motor_control_g4dual motor_control_node --ros-args -p rpm_resolution:=1.0
+```
+
+The setting must match the controller firmware. It applies to speed command
+encoding and speed feedback decoding: 12 RPM is encoded as 12 at resolution
+`1.0`, or 120 at resolution `0.1`. Commands round to the nearest CAN unit;
+ROS topics still use physical RPM and the speed limit remains 135 RPM.
+Other values are rejected. Restart the node to change the resolution.
+The launch argument overrides the value in the YAML configuration.
 
 Code-flow logging is disabled by default. Enable it when launching the node:
 
@@ -138,7 +159,7 @@ back through the filtered receive and decode path. It never enables motors.
    and stale-command watchdog.
 2. **CAN protocol module (complete):** encode the STM32-compatible classic CAN frames
    (`0x601` commands; `0x581`, `0x481`, and `0x381` feedback/fault frames),
-   including signed RPM x10 encoding.
+   including selectable signed RPM x1 or x10 encoding.
 3. **SocketCAN transmit transport (complete):** configurable interface (for
    example `can0`), strict `0x601` command-ID validation, transmit error
    reporting, and hardware-disabled startup mode.

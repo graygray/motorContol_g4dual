@@ -11,6 +11,16 @@
 #include <string>
 #include <thread>
 
+#ifdef __linux__
+#include <linux/can.h>
+#include <linux/can/raw.h>
+#include <net/if.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <cstdlib>
+#include <cstring>
+#endif
+
 #include "motor_control_g4dual/motor_control_node.hpp"
 
 namespace motor_control_g4dual
@@ -324,6 +334,70 @@ TEST_F(MotorControlTopicsTest, CommandWatchdogReportsInputGapSeparatelyFromFeedb
   EXPECT_EQ(values_["command_timeout_count"], "1");
   EXPECT_EQ(values_["feedback_timeout_latched"], "false");
 }
+
+#ifdef __linux__
+TEST_F(MotorControlTopicsTest, PollsWheelSpeedsBeforeEnableAndRequiresReplies)
+{
+  const char * interface_name = std::getenv("MOTOR_CONTROL_VCAN_INTERFACE");
+  if (interface_name == nullptr || std::strlen(interface_name) == 0U) {
+    GTEST_SKIP() << "Set MOTOR_CONTROL_VCAN_INTERFACE to run the vcan integration test";
+  }
+  const int peer = ::socket(PF_CAN, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, CAN_RAW);
+  ASSERT_GE(peer, 0);
+  const auto close_peer = [](int * fd) {::close(*fd); delete fd;};
+  const std::unique_ptr<int, decltype(close_peer)> peer_guard(new int(peer), close_peer);
+  sockaddr_can address{};
+  address.can_family = AF_CAN;
+  address.can_ifindex = static_cast<int>(if_nametoindex(interface_name));
+  ASSERT_NE(address.can_ifindex, 0);
+  ASSERT_EQ(::bind(peer, reinterpret_cast<const sockaddr *>(&address), sizeof(address)), 0);
+
+  rclcpp::NodeOptions options;
+  options.arguments({"--ros-args", "-r", "__ns:=/wheel_poll_test"});
+  options.parameter_overrides({
+    rclcpp::Parameter("enable_can", true),
+    rclcpp::Parameter("can_interface", std::string(interface_name)),
+    rclcpp::Parameter("publish_odom_tf", false)});
+  auto polled_motor = std::make_shared<MotorControlNode>(options);
+  rclcpp::executors::SingleThreadedExecutor can_executor;
+  can_executor.add_node(polled_motor);
+
+  int speed_messages = 0;
+  auto speeds = client_->create_subscription<std_msgs::msg::Float64MultiArray>(
+    "/wheel_poll_test/wheel_speed_feedback", 10,
+    [&](const std_msgs::msg::Float64MultiArray::SharedPtr message) {
+      ASSERT_EQ(message->data.size(), 2U);
+      EXPECT_DOUBLE_EQ(message->data[0], 0.0);
+      EXPECT_DOUBLE_EQ(message->data[1], 0.0);
+      ++speed_messages;
+    });
+  int queries = 0;
+  bool reply_enabled = false;
+  const auto service_controller = [&]() {
+      can_executor.spin_some();
+      can_frame frame{};
+      while (::read(peer, &frame, sizeof(frame)) == static_cast<ssize_t>(sizeof(frame))) {
+        const unsigned char expected[8] = {0x43, 0x6C, 0x60, 0x03, 0, 0, 0, 0};
+        if (frame.can_id != 0x601U || frame.can_dlc != 8U ||
+          std::memcmp(frame.data, expected, sizeof(expected)) != 0)
+        {
+          continue;
+        }
+        ++queries;
+        if (reply_enabled) {
+          frame.can_id = 0x581U;
+          EXPECT_EQ(::write(peer, &frame, sizeof(frame)), static_cast<ssize_t>(sizeof(frame)));
+        }
+      }
+    };
+  ASSERT_TRUE(spin_until([&]() {service_controller(); return queries >= 3;}));
+  EXPECT_EQ(speed_messages, 0);  // Queries alone must not fabricate feedback.
+  EXPECT_FALSE(MotorControlNodeTestPeer::enabled(*polled_motor));
+  reply_enabled = true;
+  ASSERT_TRUE(spin_until([&]() {service_controller(); return speed_messages >= 3;}));
+  EXPECT_FALSE(MotorControlNodeTestPeer::enabled(*polled_motor));
+}
+#endif
 
 }  // namespace
 }  // namespace motor_control_g4dual

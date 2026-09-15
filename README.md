@@ -74,7 +74,7 @@ default 135 RPM limit and 50 ms control period match the current
 | `enable_can` | `false` | Enables physical SocketCAN transmission |
 | `rpm_resolution` | `1.0` | Startup-only CAN speed resolution: `1.0` or `0.1` RPM per unit |
 | `can_interface` | `can0` | Linux SocketCAN network-interface name |
-| `can_receive_poll_ms` | `50` | Interval used to drain received CAN frames |
+| `can_receive_poll_ms` | `50` | Interval used to query wheel speeds and drain received CAN frames |
 | `feedback_timeout_ms` | `500` | Enabled-motion timeout for speed/position feedback |
 | `reply_timeout_ms` | `500` | Startup-only deadline for firmware and optional control replies |
 | `expect_control_ack` | `false` | Startup-only opt-in control acknowledgement diagnostics |
@@ -82,6 +82,14 @@ default 135 RPM limit and 50 ms control period match the current
 | `odom_frame_id` / `base_frame_id` | `odom` / `base_link` | Odometry frame names |
 | `left_joint_name` / `right_joint_name` | wheel joint names | Joint-state names |
 | `publish_odom_tf` | `true` | Broadcast the `odom` to `base_link` transform |
+
+With CAN enabled, the node queries both measured wheel speeds every
+`can_receive_poll_ms` (default 50 ms), including before motor enable. This supports
+controllers that only return speeds on request. The query is
+`601#436C600300000000`; the expected reply is `581#436C6003LLLLRRRR`, with
+little-endian signed 16-bit motor speeds scaled by `rpm_resolution`. Unsolicited
+speed reports remain supported. Only received feedback refreshes feedback
+timestamps; sending queries does not satisfy the motion-test freshness check.
 
 SocketCAN support requires Linux. If CAN is explicitly enabled and the named
 interface cannot be opened, node startup fails instead of silently continuing
@@ -495,7 +503,7 @@ colcon test --packages-select motor_control_g4dual
 colcon test-result --verbose
 ```
 
-The SocketCAN integration test is built on Linux but skips unless a test
+The SocketCAN integration tests are built on Linux but skip unless a test
 interface is explicitly selected. To run it on `vcan0`:
 
 ```bash
@@ -509,7 +517,10 @@ colcon test-result --verbose
 
 Create `vcan0` only if it does not already exist. The integration test verifies
 an encoded `0x601` transmission through the kernel and injects a `0x581` reply
-back through the filtered receive and decode path. It never enables motors.
+back through the filtered receive and decode path. The node test also emulates
+a controller that only replies to speed queries: repeated replies produce wheel
+feedback before motor enable, while unanswered queries produce no feedback.
+These tests never enable motors.
 
 ## Implementation plan
 

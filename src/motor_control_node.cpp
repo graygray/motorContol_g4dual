@@ -320,6 +320,18 @@ void MotorControlNode::publish_motor_rpm(double left_rpm, double right_rpm)
 
 void MotorControlNode::receive_can_frames()
 {
+  // Some controllers only return measured speeds when queried. Poll even while
+  // motion is disabled so the standstill check has feedback before test start.
+  // Sending a query must not refresh feedback timestamps; only replies do that.
+  std::string request_error;
+  if (!can_transport_->send_command(
+      MotorCanProtocol::encode_wheel_speeds_request(), request_error))
+  {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "CAN wheel-speed query failed: %s", request_error.c_str());
+  }
+
   constexpr std::size_t kMaximumFramesPerPoll = 64U;
   for (std::size_t index = 0U; index < kMaximumFramesPerPoll; ++index) {
     CanFrame frame;

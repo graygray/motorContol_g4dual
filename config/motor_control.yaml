@@ -7,7 +7,7 @@ motor_control:
     motor_rpm_topic: motor_rpm_command
     enable_can: false
     can_interface: can0
-    can_receive_poll_ms: 50
+    can_receive_poll_ms: 50  # Drain CAN frames and query measured wheel speeds
     feedback_timeout_ms: 500
     reply_timeout_ms: 500
     expect_control_ack: false  # Enable only for firmware that acknowledges every control write

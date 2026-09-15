@@ -23,6 +23,14 @@ void MotorControlNode::configure_motion_test()
       return declare_parameter<double>(std::string("motion_test.") + key, value, descriptor);
     };
   auto & c = motion_test_config_;
+  c.s_length = number("s_length_m", c.s_length);
+  c.s_radius = number("s_radius_m", c.s_radius);
+  c.s_heading_gain = number("s_heading_gain", c.s_heading_gain);
+  c.s_lateral_gain = number("s_lateral_gain", c.s_lateral_gain);
+  c.circle_radius = number("circle_radius_m", c.circle_radius);
+  c.square_side = number("square_side_m", c.square_side);
+  c.circle_timeout = number("circle_timeout_s", c.circle_timeout);
+  c.clockwise = declare_parameter<bool>("motion_test.clockwise", false, descriptor);
   c.distance = number("distance_m", c.distance);
   c.angle = number("angle_deg", 90.0) * 3.14159265358979323846 / 180.0;
   c.linear_speed = number("linear_speed_mps", c.linear_speed);
@@ -77,15 +85,15 @@ void MotorControlNode::motion_test_command(const std_msgs::msg::String::SharedPt
       RCLCPP_WARN(get_logger(), "Motion test rejected: %s", reason);
       publish_motion_test_status(std::string("rejected: ") + reason);
     };
-  if (kind != "straight" && kind != "rotate") {
-    reject("expected straight, rotate or cancel");
+  if (!MotionTest::supported(kind)) {
+    reject("expected straight, rotate, circle, square, s or cancel");
     return;
   }
   if (motion_test_.active()) {reject("a test is already active"); return;}
   if (!motion_test_allowed_) {reject("motion_test.enabled is false"); return;}
   const double rpm_per_mps = gear_ratio_ * 60.0 / (6.28318530717958647692 * wheel_radius_m_);
-  const double wheel_speed = kind == "straight" ? motion_test_config_.linear_speed :
-    motion_test_config_.angular_speed * wheel_separation_m_ / 2.0;
+  const double wheel_speed = MotionTest::maximum_wheel_speed(
+    kind, motion_test_config_, wheel_separation_m_);
   if (wheel_speed * rpm_per_mps > max_motor_speed_rpm_ || motion_test_log_directory_.empty()) {
     reject("selected test exceeds RPM limit or has no log directory");
     return;
@@ -119,6 +127,10 @@ void MotorControlNode::motion_test_command(const std_msgs::msg::String::SharedPt
     motion_test_log_.open(motion_test_log_path_, std::ios::out);
     const auto & c = motion_test_config_;
     motion_test_log_ << "# kind=" << kind << "; distance_m=" << c.distance <<
+      "; s_length_m=" << c.s_length << "; s_radius_m=" << c.s_radius <<
+      "; s_heading_gain=" << c.s_heading_gain << "; s_lateral_gain=" << c.s_lateral_gain <<
+      "; circle_radius_m=" << c.circle_radius << "; square_side_m=" << c.square_side <<
+      "; clockwise=" << c.clockwise << "; circle_timeout_s=" << c.circle_timeout <<
       "; angle_rad=" << c.angle << "; repetitions=" << c.repetitions <<
       "; linear_speed_mps=" << c.linear_speed << "; angular_speed_radps=" << c.angular_speed <<
       "; linear_accel_mps2=" << c.linear_accel << "; angular_accel_radps2=" << c.angular_accel <<
@@ -127,7 +139,9 @@ void MotorControlNode::motion_test_command(const std_msgs::msg::String::SharedPt
     motion_test_log_ << "elapsed_s,state,segment,progress,last_stopped_segment_progress,"
       "relative_x_m,relative_y_m,"
       "relative_yaw_rad,linear_command_mps,angular_command_radps,left_target_rpm,"
-      "right_target_rpm,left_measured_rpm,right_measured_rpm,odom_age_s,speed_age_s,reason\n";
+      "right_target_rpm,left_measured_rpm,right_measured_rpm,odom_age_s,speed_age_s,reason,"
+      "segment_type,progress_unit,segment_target,last_stopped_segment_type,"
+      "last_stopped_segment_target,path_error_m,s_reference_heading_rad,s_heading_error_rad\n";
     motion_test_log_.flush();
     if (!motion_test_log_) {throw std::runtime_error("cannot create CSV log");}
     motion_test_.start(kind, motion_test_config_, sample);
@@ -176,7 +190,12 @@ void MotorControlNode::record_motion_test()
     ',' << -dx * std::sin(origin.yaw) + dy * std::cos(origin.yaw) << ',' <<
     s.yaw - origin.yaw << ',' << linear_velocity_mps_ << ',' << angular_velocity_radps_ <<
     ',' << target.left << ',' << target.right << ',' << s.left_rpm << ',' << s.right_rpm <<
-    ',' << s.odom_age << ',' << s.speed_age << ',' << motion_test_.reason() << '\n';
+    ',' << s.odom_age << ',' << s.speed_age << ',' << motion_test_.reason() << ',' <<
+    motion_test_.segment_type() << ',' << motion_test_.progress_unit() << ',' <<
+    motion_test_.segment_target() << ',' << motion_test_.last_segment_type() << ',' <<
+    motion_test_.last_segment_target() << ',' << motion_test_.path_error(s) << ',' <<
+    (motion_test_.kind() == "s" ? motion_test_.reference_heading() - origin.yaw : 0.0) << ',' <<
+    (motion_test_.kind() == "s" ? motion_test_.heading_error(s) : 0.0) << '\n';
   motion_test_log_.flush();
 }
 
@@ -213,7 +232,14 @@ void MotorControlNode::publish_motion_test_status(const std::string & event)
   std::ostringstream output;
   output << event << "; state=" << motion_test_.state() << "; kind=" << motion_test_.kind() <<
     "; segment=" << motion_test_.segment() << "; reason=" << motion_test_.reason() <<
+    "; segment_type=" << motion_test_.segment_type() <<
+    "; progress_unit=" << motion_test_.progress_unit() <<
+    "; segment_target=" << motion_test_.segment_target() <<
+    "; last_stopped_segment_type=" << motion_test_.last_segment_type() <<
+    "; last_stopped_segment_target=" << motion_test_.last_segment_target() <<
     "; last_stopped_segment_progress=" << motion_test_.last_segment_progress() <<
+    "; path_error_m=" << motion_test_.path_error(s) <<
+    "; s_heading_error_rad=" << (motion_test_.kind() == "s" ? motion_test_.heading_error(s) : 0.0) <<
     "; displacement_m=" << std::hypot(s.x - origin.x, s.y - origin.y) <<
     "; yaw_change_rad=" << s.yaw - origin.yaw << "; csv=" << motion_test_log_path_;
   std_msgs::msg::String message;

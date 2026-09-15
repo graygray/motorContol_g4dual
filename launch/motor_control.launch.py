@@ -29,7 +29,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "rpm_resolution",
-                default_value="0.1",
+                default_value="1.0",
                 choices=["1", "1.0", "0.1"],
                 description="RPM per CAN speed unit; must match controller firmware",
             ),

@@ -21,7 +21,7 @@ motor_control:
     wheel_separation_m: 0.4762
     gear_ratio: 1.0
     max_motor_speed_rpm: 135.0
-    rpm_resolution: 0.1  # RPM per CAN unit: 1.0 or 0.1; match controller firmware
+    rpm_resolution: 1.0  # RPM per CAN unit: 1.0 or 0.1; match controller firmware
     invert_left_motor: false
     invert_right_motor: true
     command_timeout_ms: 500
@@ -31,7 +31,16 @@ motor_control:
     motion_test.enabled: true
     motion_test.distance_m: 1.0
     motion_test.angle_deg: 90.0
-    motion_test.repetitions: 3  # Each repetition is forward/backward or left/right
+    # Repetition: straight/rotate = one pair; circle/square/s = one complete shape
+    motion_test.repetitions: 3
+    motion_test.s_length_m: 4.0  # Travel length of one smooth left/right S
+    motion_test.s_radius_m: 1.0  # Minimum nominal curvature radius
+    motion_test.s_heading_gain: 1.0  # 1/s; set both gains to 0 for feedforward only
+    motion_test.s_lateral_gain: 1.0  # 1/m^2; odometry cross-track correction
+    motion_test.circle_radius_m: 1.0
+    motion_test.square_side_m: 1.0
+    motion_test.clockwise: false  # Circle/square direction; S first turn; false = left
+    motion_test.circle_timeout_s: 120.0  # Per circle, including acceleration/deceleration
     motion_test.linear_speed_mps: 0.1
     motion_test.angular_speed_radps: 0.2
     motion_test.linear_accel_mps2: 0.1

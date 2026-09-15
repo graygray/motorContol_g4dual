@@ -154,7 +154,7 @@ public:
   static constexpr std::uint16_t kEncoderReportId = 0x481U;
   static constexpr std::uint16_t kFaultReportId = 0x381U;
   static constexpr double kMaxSpeedRpm = 135.0;
-  static constexpr double kSpeedUnitsPerRpm = 10.0;
+  static constexpr double kSpeedUnitsPerRpm = 1.0;
   static constexpr double kDefaultRpmResolution = 1.0 / kSpeedUnitsPerRpm;
 
   static bool is_valid_rpm_resolution(double rpm_resolution);

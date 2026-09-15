@@ -72,7 +72,7 @@ default 135 RPM limit and 50 ms control period match the current
 | Parameter | Default | Purpose |
 |---|---:|---|
 | `enable_can` | `false` | Enables physical SocketCAN transmission |
-| `rpm_resolution` | `0.1` | Startup-only CAN speed resolution: `1.0` or `0.1` RPM per unit |
+| `rpm_resolution` | `1.0` | Startup-only CAN speed resolution: `1.0` or `0.1` RPM per unit |
 | `can_interface` | `can0` | Linux SocketCAN network-interface name |
 | `can_receive_poll_ms` | `50` | Interval used to drain received CAN frames |
 | `feedback_timeout_ms` | `500` | Enabled-motion timeout for speed/position feedback |
@@ -109,7 +109,7 @@ source install/setup.bash
 ros2 launch motor_control_g4dual motor_control.launch.py
 ```
 
-Select the CAN RPM resolution at launch (default: `0.1`):
+Select the CAN RPM resolution at launch (default: `1.0`):
 
 ```bash
 ros2 launch motor_control_g4dual motor_control.launch.py rpm_resolution:=1
@@ -193,7 +193,7 @@ because SocketCAN is disabled.
 Confirm `wheel_radius_m`, `wheel_separation_m`, `gear_ratio`, and motor
 inversion against the real platform before any hardware transport is enabled.
 
-## Built-in motion tests (version 1)
+## Built-in motion tests (version 3)
 
 The **existing `motor_control_node`** executes tests through an internal state
 machine. No additional ROS node or executable is launched. The test feature is
@@ -205,6 +205,9 @@ at startup if you want to disable test commands.
 |---|---|
 | `straight` | Forward by `distance_m`, stop, reverse by the same distance, stop; repeat |
 | `rotate` | Turn left by `angle_deg`, stop, turn right by the same angle, stop; repeat |
+| `circle` | Drive one full circle of `circle_radius_m`, stop; repeat |
+| `square` | Drive `square_side_m`, stop, turn 90 degrees, stop; four sides per repetition |
+| `s` | One smooth left/right S over `s_length_m` of travel, stop; repeat |
 | `cancel` | Abort the active test, request zero speed and the existing ramp emergency stop |
 
 Commands use reliable, volatile QoS. Publish once after discovery; do not retain
@@ -257,10 +260,105 @@ All `motion_test.*` settings are startup-only; restart after changing them.
 Defaults are 1 m, 90 degrees, three forward/reverse or left/right pairs,
 0.1 m/s, 0.2 rad/s, acceleration limits 0.1 m/s² and 0.2 rad/s². The YAML lists
 all settings. Angles such as 180 or 360 degrees use continuous accumulated yaw.
-There is no upper-layer heading correction: these tests expose motor/platform
-asymmetry. Distance termination uses displacement projected on each segment's
+Straight, rotate, circle and square use no upper-layer heading correction,
+exposing motor/platform asymmetry. S has separately configurable path correction. Distance termination uses displacement projected on each segment's
 starting heading; reverse is measured from the actual stopped forward endpoint,
 not a navigation command back to the original pose.
+
+### Circle and square (version 2)
+
+The AICamera helper `/Users/test/OSPath/AICamera/x.sh` supports:
+
+```bash
+aic mc tp circle
+aic mc tp square
+aic mc tp status
+aic mc tp cancel
+```
+
+`circle` and `square` can also be sent directly as String data on
+`/motion_test/command`, exactly like `straight` and `rotate`.
+
+| Startup parameter | Default | Meaning |
+|---|---:|---|
+| `motion_test.circle_radius_m` | 1.0 | Radius measured to the robot centre |
+| `motion_test.square_side_m` | 1.0 | Length of each straight side |
+| `motion_test.clockwise` | false | Circle/square turn direction; false = counterclockwise |
+| `motion_test.circle_timeout_s` | 120.0 | Deadline for each circle's motion phase |
+| `motion_test.repetitions` | 3 | Number of complete circles or squares |
+
+Circle angular speed is the smaller of `angular_speed_radps` and
+`linear_speed_mps / circle_radius_m`. Linear speed is radius times angular-speed
+magnitude; acceleration and braking preserve this ratio and obey both acceleration
+limits. Before a test starts, checks include the outer wheel's speed to avoid RPM saturation.
+One circle ends after a directed **continuous** yaw change of 2 pi, then confirms
+standstill. Each subsequent circle starts from the actual stopped pose.
+At defaults, a circle takes about 64 seconds plus settling; the separate 120-second
+deadline accommodates that. Increase it for larger circles or lower speeds.
+A radius below half the wheel separation makes the inner wheel reverse.
+
+A square always uses four forward sides and four stationary 90-degree turns,
+including the last turn back toward the initial heading. Its angle is independent
+of `angle_deg` (which still controls `rotate`). There are eight segments per square,
+with standstill checks at every corner. `clockwise` applies to every turn; it does
+not change the alternating left/right sequence of the original `rotate` test.
+
+These patterns measure platform behavior without correcting position or heading
+drift. Circle completion uses wheel-odometry yaw, not a verified position return;
+the radial-error log exposes estimated radius errors but does not correct them.
+Likewise, square errors accumulate across sides.
+
+### Smooth S and odometry path correction (version 3)
+
+```bash
+aic mc tp s
+aic mc tp status
+# Or publish directly:
+ros2 topic pub --once /motion_test/command std_msgs/msg/String '{data: s}'
+```
+
+Each repetition is one forward S: curvature starts at zero, rises to a left turn,
+passes smoothly through zero into a right turn, and returns to zero. There is
+**no stop at the middle**. The robot decelerates and confirms standstill after
+each complete S. `motion_test.clockwise: true` mirrors the shape (right first).
+The end heading is nominally parallel to the start, with forward and sideways
+displacement; this is not a return-to-start test.
+
+| Startup parameter | Default | Meaning |
+|---|---:|---|
+| `motion_test.s_length_m` | 4.0 | Travel length of one S, not its forward extent |
+| `motion_test.s_radius_m` | 1.0 | Minimum nominal radius, at maximum curvature |
+| `motion_test.s_heading_gain` | 1.0 | Heading correction gain, 1/s |
+| `motion_test.s_lateral_gain` | 1.0 | Cross-track correction gain, 1/m² |
+
+Both gains accept zero. Set **both to 0** to measure motor response without path
+correction. These gains only affect S; earlier patterns retain their behavior.
+As with other parameters, restart the node after changing them.
+
+For signed forward travel `d` within a repetition of length `L`, nominal curvature
+is `sin(2*pi*d/L) / radius` (negated for right-first). Travel comes from successive
+odometry displacements projected on the average vehicle heading. Backward motion
+reduces progress; spinning in place does not advance the pattern. Target heading
+comes from integrating this curvature, and the reference x/y path is integrated
+numerically. The controller combines curvature feedforward with heading and
+cross-track corrections from odometry. All commands obey the existing body speed
+and acceleration limits; the pre-start RPM check includes worst-case angular
+correction at the outer wheel. Saturation or acceleration limiting may reduce
+tracking accuracy at aggressive parameter settings.
+
+One S uses `segment_timeout_s` (60 s by default); default travel takes about
+41 seconds plus settling. Increase the deadline for longer or slower S patterns.
+Stall, stale-feedback, external takeover, cancel and motor-fault behavior remain
+the same. Completion is based on travel and standstill, not an accuracy threshold;
+terminal braking does not wait for a final heading correction. Each repetition
+uses the actual stopped pose as its new origin.
+
+`path_error_m` is signed cross-track error to the S reference. CSV adds
+`s_reference_heading_rad` (relative to the test's initial heading) and
+`s_heading_error_rad` (wrapped target minus measured heading). These two columns
+are zero for other patterns. Status also includes S heading error. The reference
+and correction both use wheel odometry; external markers or positioning are
+still needed to measure actual slip and ground-track accuracy.
 
 ### Mixing tests with normal driving
 
@@ -281,7 +379,8 @@ normal command, so a test does not abruptly reverse a moving robot.
   endpoint accuracy. Coast/overshoot is retained in the stopped-segment result.
 - Each movement and each standstill wait has its own `segment_timeout_s`
   (default 60 s). No directed progress for `stall_timeout_s` (5 s) aborts motion.
-  Increase the segment deadline for larger distances or slower speeds.
+  S uses one movement segment per complete S. Circle motion uses `circle_timeout_s` instead; standstill waits still use
+  `segment_timeout_s`. Increase deadlines for larger paths or slower speeds.
 - Absolute encoder data and wheel-speed data have independent freshness checks
   using `feedback_timeout_ms`. A missed control tick beyond that deadline,
   implausible encoder jump, or test speed-transmission error aborts the run.
@@ -311,21 +410,31 @@ A process/power failure may leave a partial log without a terminal row.
 The first CSV line is a `#` configuration comment. Remaining rows contain:
 
 - elapsed monotonic seconds, state, segment, progress and last stopped segment
-  progress (metres for straight tests, radians for rotation);
+  progress (metres for lines, radians for turns and circle arcs);
 - x/y displacement in the test's initial coordinate frame and continuous yaw;
 - commanded body velocities, direction-normalized left/right target RPM and
-  measured RPM, independent feedback ages, and reason.
+  measured RPM, independent feedback ages, and reason;
+- `segment_type` (`line`, `turn`, `arc`, `s_curve`, or initial `standstill`), `progress_unit`,
+  `segment_target`, `last_stopped_segment_type`, `last_stopped_segment_target`;
+- `path_error_m`: signed lateral error for lines, signed radial error for circles
+  (positive means outside the nominal circle), translation during stationary turns,
+  or signed cross-track error for S.
+  This field is diagnostic only and uses the current segment's starting pose.
 
-Segment numbers start at 1; odd segments are forward/left, even segments are
-reverse/right. Segment 0 is the initial standstill wait. When a segment settles,
+Segment numbers start at 1. For straight/rotate, odd segments are forward/left
+and even segments reverse/right. For squares, odd segments are forward lines and
+even segments are 90-degree turns; for circles each segment is one lap, and
+for S each segment is one full left/right curve. Segment 0
+is the initial standstill wait (its progress/target fields are not a motion result). When a segment settles,
 `last_stopped_segment_progress` captures its achieved distance/angle before the
-next segment starts. Subtract the configured target to inspect overshoot.
+next segment starts. Subtract `last_stopped_segment_target` to inspect overshoot
+in the units identified by `last_stopped_segment_type` (line/s_curve = m; turn/arc = rad).
 Compare normalized target/actual RPM with feedback delay in mind; rows capture
 the latest received feedback, not time-synchronized motor measurements.
 
 `completed` means the sequence finished; it is not an accuracy pass/fail result.
 The CSV final displacement and yaw are **wheel odometry estimates**. Use ground
-marks or independent positioning to measure real drift and wheel slip. Version 1
+marks or independent positioning to measure real drift and wheel slip. Version 3
 does not provide obstacle detection or an independent hardware watchdog.
 
 The state-machine scenarios can be tested without ROS:
@@ -354,9 +463,10 @@ Diagnostics include `firmware_query_state`, `firmware_identifier`,
 firmware identifier (`primax` in the local source) does not identify a build or
 report RPM scaling. Therefore `rpm_resolution_verified` remains `false`, even
 when the identifier matches. A mismatch or failed query does not gate motion.
-Verify the flashed controller's build and speed units before bench operation;
-the local firmware contract uses `0.1 RPM/unit`. Do not change a deployed
-`1.0` setting based solely on an identifier or these logs.
+The current deployment of this project uses `1.0 RPM/unit`, as confirmed by the
+operator. YAML, launch and protocol defaults are aligned to `1.0`. This setting
+is specific to motorContol_g4dual; other projects and firmware are unchanged.
+The identifier alone still cannot verify scaling automatically.
 
 Rejected-frame warnings include ID, length, bytes, and a readable reason, and
 are throttled to once per second. Diagnostics retain `rejected_frame_count`,

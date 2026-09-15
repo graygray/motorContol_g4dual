@@ -16,7 +16,7 @@ namespace
 {
 TEST(MotorCanProtocol, EncodesDualWheelSpeeds)
 {
-  const auto frame = MotorCanProtocol::encode_wheel_speeds(12.3, -45.6);
+  const auto frame = MotorCanProtocol::encode_wheel_speeds(12.3, -45.6, 0.1);
   ASSERT_TRUE(frame);
   EXPECT_EQ(frame->id, 0x601U);
   EXPECT_EQ(frame->length, 8U);
@@ -24,6 +24,22 @@ TEST(MotorCanProtocol, EncodesDualWheelSpeeds)
     frame->data,
     (std::array<std::uint8_t, 8U>{
       0x23U, 0xFFU, 0x60U, 0x03U, 0x7BU, 0x00U, 0x38U, 0xFEU}));
+}
+
+TEST(MotorCanProtocol, DefaultsToWholeRpmForThisProject)
+{
+  EXPECT_DOUBLE_EQ(MotorCanProtocol::kDefaultRpmResolution, 1.0);
+  const auto frame = MotorCanProtocol::encode_wheel_speeds(12.0, -12.0);
+  ASSERT_TRUE(frame);
+  EXPECT_EQ(frame->data[4], 12U);
+  EXPECT_EQ(frame->data[5], 0U);
+  EXPECT_EQ(frame->data[6], 0xF4U);
+  EXPECT_EQ(frame->data[7], 0xFFU);
+  const auto reply = MotorCanProtocol::decode(
+    {MotorCanProtocol::kReplyId, 8U, {0x43U, 0x6CU, 0x60U, 0U, 12U, 0U, 0xF4U, 0xFFU}});
+  ASSERT_TRUE(reply);
+  EXPECT_DOUBLE_EQ(std::get<WheelSpeedsReply>(*reply.message).m1_speed_rpm, 12.0);
+  EXPECT_DOUBLE_EQ(std::get<WheelSpeedsReply>(*reply.message).m2_speed_rpm, -12.0);
 }
 
 TEST(MotorCanProtocol, RejectsInvalidSpeeds)
@@ -142,7 +158,7 @@ TEST(MotorCanProtocol, DecodesReplyPayloads)
 
   const auto speeds = MotorCanProtocol::decode(
     {MotorCanProtocol::kReplyId, 8U,
-      {0x43U, 0x6CU, 0x60U, 0U, 0x58U, 0x02U, 0xA8U, 0xFDU}});
+      {0x43U, 0x6CU, 0x60U, 0U, 0x58U, 0x02U, 0xA8U, 0xFDU}}, 0.1);
   ASSERT_TRUE(speeds);
   const auto speed_values = std::get<WheelSpeedsReply>(*speeds.message);
   EXPECT_DOUBLE_EQ(speed_values.m1_speed_rpm, 60.0);

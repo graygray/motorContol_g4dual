@@ -18,13 +18,13 @@ namespace motor_control_g4dual
 // Exercise command ownership without enabling a physical CAN transport.
 struct MotorControlNodeTestPeer
 {
-  static void start(MotorControlNode & node)
+  static void start(MotorControlNode & node, const std::string & kind = "straight")
   {
     MotionTest::Config config;
     config.repetitions = 1;
     config.distance = 0.02;
     config.settle_time = 0.01;
-    node.motion_test_.start("straight", config, node.motion_test_sample());
+    node.motion_test_.start(kind, config, node.motion_test_sample());
     node.motion_test_log_.open("/dev/null");
     node.motion_commands_enabled_ = true;
   }
@@ -208,7 +208,7 @@ TEST_F(MotorControlTopicsTest, BuiltInTestRejectsDisabledStartAndKeepsMotionGate
   ASSERT_TRUE(spin_until([&]() {
     return publisher->get_subscription_count() == 1U && !status.empty();
   }));
-  for (const auto * kind : {"straight", "rotate"}) {
+  for (const auto * kind : {"straight", "rotate", "circle", "square", "s"}) {
     status.clear();
     std_msgs::msg::String command;
     command.data = kind;
@@ -248,14 +248,16 @@ TEST_F(MotorControlTopicsTest, BuiltInTestDefaultsEnabledButStillRequiresPhysica
 
 TEST_F(MotorControlTopicsTest, ValidNormalCommandTakesOverTestWithoutClosingGate)
 {
-  MotorControlNodeTestPeer::start(*motor_);
-  MotorControlNodeTestPeer::command(*motor_, 0.12, -0.15);
-  EXPECT_EQ(MotorControlNodeTestPeer::test(*motor_).state(), "aborted");
-  EXPECT_EQ(MotorControlNodeTestPeer::test(*motor_).reason(), "external cmd_vel took control");
-  EXPECT_TRUE(MotorControlNodeTestPeer::enabled(*motor_));
-  EXPECT_TRUE(MotorControlNodeTestPeer::received(*motor_));
-  EXPECT_DOUBLE_EQ(MotorControlNodeTestPeer::linear(*motor_), 0.12);
-  EXPECT_DOUBLE_EQ(MotorControlNodeTestPeer::angular(*motor_), -0.15);
+  for (const auto * kind : {"straight", "rotate", "circle", "square", "s"}) {
+    MotorControlNodeTestPeer::start(*motor_, kind);
+    MotorControlNodeTestPeer::command(*motor_, 0.12, -0.15);
+    EXPECT_EQ(MotorControlNodeTestPeer::test(*motor_).state(), "aborted");
+    EXPECT_EQ(MotorControlNodeTestPeer::test(*motor_).reason(), "external cmd_vel took control");
+    EXPECT_TRUE(MotorControlNodeTestPeer::enabled(*motor_));
+    EXPECT_TRUE(MotorControlNodeTestPeer::received(*motor_));
+    EXPECT_DOUBLE_EQ(MotorControlNodeTestPeer::linear(*motor_), 0.12);
+    EXPECT_DOUBLE_EQ(MotorControlNodeTestPeer::angular(*motor_), -0.15);
+  }
 }
 
 TEST_F(MotorControlTopicsTest, InvalidCommandKeepsTestRunningAndZeroCommandTakesOver)

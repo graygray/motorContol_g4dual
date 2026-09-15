@@ -230,13 +230,14 @@ MotorControlNode::~MotorControlNode()
 
 void MotorControlNode::command_callback(const geometry_msgs::msg::Twist::SharedPtr message)
 {
-  if (motion_test_.active()) {
-    abort_motion_test("external cmd_vel received; command discarded");
-    return;
-  }
   if (!std::isfinite(message->linear.x) || !std::isfinite(message->angular.z)) {
     RCLCPP_WARN(get_logger(), "Ignoring cmd_vel containing a non-finite value");
     return;
+  }
+
+  if (motion_test_.active()) {
+    motion_test_.abort("external cmd_vel took control");
+    finish_motion_test(true);
   }
 
   linear_velocity_mps_ = message->linear.x;

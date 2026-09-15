@@ -16,7 +16,7 @@ void MotorControlNode::configure_motion_test()
   rcl_interfaces::msg::ParameterDescriptor descriptor;
   descriptor.read_only = true;
   descriptor.description = "Built-in motion test setting; restart to change";
-  motion_test_allowed_ = declare_parameter<bool>("motion_test.enabled", false, descriptor);
+  motion_test_allowed_ = declare_parameter<bool>("motion_test.enabled", true, descriptor);
   motion_test_log_directory_ = declare_parameter<std::string>(
     "motion_test.log_directory", "/tmp/motor_control_tests", descriptor);
   const auto number = [this, &descriptor](const char * key, double value) {
@@ -38,14 +38,6 @@ void MotorControlNode::configure_motion_test()
   c.feedback_timeout = static_cast<double>(feedback_timeout_.count()) / 1000.0;
   c.repetitions = declare_parameter<int>("motion_test.repetitions", c.repetitions, descriptor);
   MotionTest::validate(c);
-  if (motion_test_allowed_) {
-    const double rpm_per_mps = gear_ratio_ * 60.0 / (6.28318530717958647692 * wheel_radius_m_);
-    if (std::max(c.linear_speed, c.angular_speed * wheel_separation_m_ / 2.0) *
-      rpm_per_mps > max_motor_speed_rpm_ || motion_test_log_directory_.empty())
-    {
-      throw std::invalid_argument("Motion test exceeds RPM limit or has no log directory");
-    }
-  }
   motion_test_status_publisher_ = create_publisher<std_msgs::msg::String>(
     "motion_test/status", rclcpp::QoS(1).reliable().transient_local());
   motion_test_subscription_ = create_subscription<std_msgs::msg::String>(
@@ -91,6 +83,13 @@ void MotorControlNode::motion_test_command(const std_msgs::msg::String::SharedPt
   }
   if (motion_test_.active()) {reject("a test is already active"); return;}
   if (!motion_test_allowed_) {reject("motion_test.enabled is false"); return;}
+  const double rpm_per_mps = gear_ratio_ * 60.0 / (6.28318530717958647692 * wheel_radius_m_);
+  const double wheel_speed = kind == "straight" ? motion_test_config_.linear_speed :
+    motion_test_config_.angular_speed * wheel_separation_m_ / 2.0;
+  if (wheel_speed * rpm_per_mps > max_motor_speed_rpm_ || motion_test_log_directory_.empty()) {
+    reject("selected test exceeds RPM limit or has no log directory");
+    return;
+  }
   if (!enable_can_ || !motion_commands_enabled_ || fault_latched_ || feedback_timeout_latched_) {
     reject("CAN and explicitly enabled motors without safety latches are required");
     return;
@@ -188,16 +187,16 @@ void MotorControlNode::abort_motion_test(const std::string & reason)
   finish_motion_test();
 }
 
-void MotorControlNode::finish_motion_test()
+void MotorControlNode::finish_motion_test(bool keep_enabled)
 {
   command_received_ = false;
   watchdog_stopped_ = false;
   linear_velocity_mps_ = angular_velocity_radps_ = 0.0;
   // The state machine is already terminal, so stop callbacks cannot re-enter finalization.
   publish_motor_rpm(0.0, 0.0);
-  if (motion_test_.state() == "completed") {
-    stop_motors(std::make_shared<std_msgs::msg::Empty>());
-  } else {
+  // Normal completion and cmd_vel takeover keep the existing motor enable state.
+  // Faults, explicit cancellation and stop events still close the motion gate.
+  if (!keep_enabled && motion_test_.state() != "completed") {
     latch_safety_stop(motion_test_.reason().c_str());
   }
   record_motion_test();

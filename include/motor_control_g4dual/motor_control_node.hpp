@@ -37,6 +37,7 @@ public:
   ~MotorControlNode() override;
 
 private:
+  friend struct MotorControlNodeTestPeer;
   void command_callback(const geometry_msgs::msg::Twist::SharedPtr message);
   void control_callback();
   void receive_can_frames();
@@ -62,13 +63,13 @@ private:
   MotionTest::Sample motion_test_sample() const;
   void update_motion_test();
   void abort_motion_test(const std::string & reason);
-  void finish_motion_test();
+  void finish_motion_test(bool keep_enabled = false);
   void record_motion_test();
   void publish_motion_test_status(const std::string & event);
 
   MotionTest motion_test_;
   MotionTest::Config motion_test_config_;
-  bool motion_test_allowed_{false};
+  bool motion_test_allowed_{true};
   std::string motion_test_log_directory_, motion_test_log_path_;
   std::ofstream motion_test_log_;
   double odom_continuous_yaw_{0.0};

@@ -196,8 +196,10 @@ inversion against the real platform before any hardware transport is enabled.
 ## Built-in motion tests (version 1)
 
 The **existing `motor_control_node`** executes tests through an internal state
-machine. No additional ROS node or executable is launched. Tests are off by
-default, never start automatically, and never enable/reset motors themselves.
+machine. No additional ROS node or executable is launched. The test feature is
+**enabled by default alongside normal `cmd_vel` control**. Tests start only on
+request and never enable/reset motors themselves. Set `motion_test.enabled: false`
+at startup if you want to disable test commands.
 
 | `motion_test/command` (`std_msgs/msg/String`) | Sequence |
 |---|---|
@@ -215,14 +217,14 @@ path. `diagnostics` also includes `motion_test_*` state fields.
 ### Run on the robot
 
 Build and source the workspace as above. In the installed YAML (or your own
-copy), set `enable_can: true` and `motion_test.enabled: true`, after verifying
+copy), set `enable_can: true` (the test feature already defaults to enabled), after verifying
 CAN interface, geometry, direction inversion and RPM resolution. Alternatively,
 start the same executable explicitly:
 
 ```bash
 ros2 run motor_control_g4dual motor_control_node --ros-args \
   --params-file /absolute/path/to/motor_control.yaml \
-  -p enable_can:=true -p motion_test.enabled:=true
+  -p enable_can:=true
 ```
 
 1. Stop navigation/teleoperation publishers of `cmd_vel`.
@@ -239,8 +241,7 @@ ros2 topic echo /motion_test/status --qos-durability transient_local
 ros2 topic pub --once /motion_test/command std_msgs/msg/String '{data: straight}'
 ```
 
-For rotation, after the previous test finishes and motors are explicitly
-re-enabled, use:
+For rotation, after the previous test finishes, use:
 
 ```bash
 ros2 topic pub --once /motion_test/command std_msgs/msg/String '{data: rotate}'
@@ -261,6 +262,16 @@ asymmetry. Distance termination uses displacement projected on each segment's
 starting heading; reverse is measured from the actual stopped forward endpoint,
 not a navigation command back to the original pose.
 
+### Mixing tests with normal driving
+
+There is no separate operating mode to switch into. Tests and ordinary commands
+share the same node and motor enable state. One command source owns motion at a
+time: a running test generates velocities until it completes or a valid new
+`cmd_vel` takes over. Velocities are not added together. Stop periodic normal
+publishers while you want a test to run; otherwise their next message will
+interrupt it. Starting a test still requires standstill and expiry of the previous
+normal command, so a test does not abruptly reverse a moving robot.
+
 ### Completion, interruption and recording
 
 - Initial motion and every direction change require both measured wheel speeds
@@ -274,14 +285,20 @@ not a navigation command back to the original pose.
 - Absolute encoder data and wheel-speed data have independent freshness checks
   using `feedback_timeout_ms`. A missed control tick beyond that deadline,
   implausible encoder jump, or test speed-transmission error aborts the run.
-- Any external `cmd_vel` during a run aborts the test and discards that command,
-  including zero or invalid commands. Stop/reset/emergency-stop events also
-  terminate the run; an enable event during a run aborts and requires a new
-  explicit enable event. Ordinary `cmd_vel` behavior is unchanged outside tests.
-- Completion confirms measured standstill, requests zero speed and stop, and
-  closes the motion gate. Aborts request zero and the existing ramp emergency
-  stop; **aborted does not mean physical standstill has been confirmed**. Neither
-  path resumes automatically. Re-enable explicitly before subsequent motion.
+- A valid external `cmd_vel` during a run ends the test and takes control using
+  that same command, with no motor re-enable required. Zero is also a valid
+  takeover command. Invalid (non-finite) commands are ignored without interrupting
+  the test. The interrupted test is recorded as `aborted` with reason
+  `external cmd_vel took control`; it does not resume automatically.
+- Completion confirms measured standstill, requests zero speed and leaves the
+  motors enabled. You can send a normal command or start another test immediately.
+  Previously received normal commands are not replayed. The ordinary command
+  watchdog applies after takeover; feedback monitoring remains active throughout.
+- Explicit `cancel`, faults, and stop/reset/emergency-stop events still terminate
+  the test and close the motion gate. An enable event during a run aborts and
+  requires a new explicit enable event. These interruptions request the existing
+  ramp emergency stop; **aborted does not mean physical standstill has been
+  confirmed**. Re-enable explicitly after these events before subsequent motion.
 - Tests refuse to run with CAN disabled. Dry-run is not a simulated robot.
 
 Every accepted run creates a timestamped CSV under `motion_test.log_directory`
@@ -320,7 +337,8 @@ c++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude \
 ```
 
 They are also registered in the normal `colcon test` run, together with ROS
-checks for test opt-in and rejection when CAN is disabled.
+checks for defaults, command takeover, completion, cancellation and rejection
+when CAN is disabled.
 
 ## Reply handling and diagnostics
 

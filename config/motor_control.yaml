@@ -28,7 +28,7 @@ motor_control:
     control_period_ms: 50
 
     # Built-in tests run inside motor_control_node. No automatic enable or start.
-    motion_test.enabled: false
+    motion_test.enabled: true
     motion_test.distance_m: 1.0
     motion_test.angle_deg: 90.0
     motion_test.repetitions: 3  # Each repetition is forward/backward or left/right

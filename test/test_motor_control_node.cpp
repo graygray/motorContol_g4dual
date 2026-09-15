@@ -6,6 +6,7 @@
 #include <chrono>
 #include <functional>
 #include <map>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -14,6 +15,50 @@
 
 namespace motor_control_g4dual
 {
+// Exercise command ownership without enabling a physical CAN transport.
+struct MotorControlNodeTestPeer
+{
+  static void start(MotorControlNode & node)
+  {
+    MotionTest::Config config;
+    config.repetitions = 1;
+    config.distance = 0.02;
+    config.settle_time = 0.01;
+    node.motion_test_.start("straight", config, node.motion_test_sample());
+    node.motion_test_log_.open("/dev/null");
+    node.motion_commands_enabled_ = true;
+  }
+  static void command(MotorControlNode & node, double linear, double angular)
+  {
+    auto message = std::make_shared<geometry_msgs::msg::Twist>();
+    message->linear.x = linear;
+    message->angular.z = angular;
+    node.command_callback(message);
+  }
+  static void complete(MotorControlNode & node)
+  {
+    auto sample = node.motion_test_sample();
+    for (int i = 0; i < 1000 && node.motion_test_.active(); ++i) {
+      sample.time += 0.05;
+      sample.odom_age = sample.speed_age = 0.0;
+      const auto command = node.motion_test_.update(sample);
+      sample.x += command.linear * 0.05;
+    }
+    ASSERT_EQ(node.motion_test_.state(), "completed");
+    node.finish_motion_test();
+  }
+  static void cancel(MotorControlNode & node)
+  {
+    auto message = std::make_shared<std_msgs::msg::String>();
+    message->data = "cancel";
+    node.motion_test_command(message);
+  }
+  static bool enabled(const MotorControlNode & node) {return node.motion_commands_enabled_;}
+  static bool received(const MotorControlNode & node) {return node.command_received_;}
+  static double linear(const MotorControlNode & node) {return node.linear_velocity_mps_;}
+  static double angular(const MotorControlNode & node) {return node.angular_velocity_radps_;}
+  static const MotionTest & test(const MotorControlNode & node) {return node.motion_test_;}
+};
 namespace
 {
 class MotorControlTopicsTest : public ::testing::Test
@@ -145,6 +190,15 @@ TEST_F(MotorControlTopicsTest, DiagnosticsKeepUnknownFirmwareAndScaleExplicit)
 
 TEST_F(MotorControlTopicsTest, BuiltInTestRejectsDisabledStartAndKeepsMotionGated)
 {
+  executor_->remove_node(motor_);
+  motor_.reset();
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+    rclcpp::Parameter("enable_can", false),
+    rclcpp::Parameter("publish_odom_tf", false),
+    rclcpp::Parameter("motion_test.enabled", false)});
+  motor_ = std::make_shared<MotorControlNode>(options);
+  executor_->add_node(motor_);
   std::string status;
   auto subscription = client_->create_subscription<std_msgs::msg::String>(
     "motion_test/status", rclcpp::QoS(1).reliable().transient_local(),
@@ -172,17 +226,9 @@ TEST_F(MotorControlTopicsTest, BuiltInTestRejectsDisabledStartAndKeepsMotionGate
   EXPECT_EQ(values_["motion_commands_enabled"], "false");
 }
 
-TEST_F(MotorControlTopicsTest, BuiltInTestOptInStillRequiresPhysicalCan)
+TEST_F(MotorControlTopicsTest, BuiltInTestDefaultsEnabledButStillRequiresPhysicalCan)
 {
-  executor_->remove_node(motor_);
-  motor_.reset();
-  rclcpp::NodeOptions options;
-  options.parameter_overrides({
-    rclcpp::Parameter("enable_can", false),
-    rclcpp::Parameter("publish_odom_tf", false),
-    rclcpp::Parameter("motion_test.enabled", true)});
-  motor_ = std::make_shared<MotorControlNode>(options);
-  executor_->add_node(motor_);
+  EXPECT_TRUE(motor_->get_parameter("motion_test.enabled").as_bool());
   std::string status;
   auto subscription = client_->create_subscription<std_msgs::msg::String>(
     "motion_test/status", rclcpp::QoS(1).reliable().transient_local(),
@@ -198,6 +244,61 @@ TEST_F(MotorControlTopicsTest, BuiltInTestOptInStillRequiresPhysicalCan)
     return status.find("rejected: CAN and explicitly enabled motors") != std::string::npos;
   }));
   EXPECT_NE(status.find("state=idle"), std::string::npos);
+}
+
+TEST_F(MotorControlTopicsTest, ValidNormalCommandTakesOverTestWithoutClosingGate)
+{
+  MotorControlNodeTestPeer::start(*motor_);
+  MotorControlNodeTestPeer::command(*motor_, 0.12, -0.15);
+  EXPECT_EQ(MotorControlNodeTestPeer::test(*motor_).state(), "aborted");
+  EXPECT_EQ(MotorControlNodeTestPeer::test(*motor_).reason(), "external cmd_vel took control");
+  EXPECT_TRUE(MotorControlNodeTestPeer::enabled(*motor_));
+  EXPECT_TRUE(MotorControlNodeTestPeer::received(*motor_));
+  EXPECT_DOUBLE_EQ(MotorControlNodeTestPeer::linear(*motor_), 0.12);
+  EXPECT_DOUBLE_EQ(MotorControlNodeTestPeer::angular(*motor_), -0.15);
+}
+
+TEST_F(MotorControlTopicsTest, InvalidCommandKeepsTestRunningAndZeroCommandTakesOver)
+{
+  MotorControlNodeTestPeer::start(*motor_);
+  MotorControlNodeTestPeer::command(*motor_, std::numeric_limits<double>::quiet_NaN(), 0.0);
+  EXPECT_TRUE(MotorControlNodeTestPeer::test(*motor_).active());
+  MotorControlNodeTestPeer::command(*motor_, 0.0, 0.0);
+  EXPECT_FALSE(MotorControlNodeTestPeer::test(*motor_).active());
+  EXPECT_TRUE(MotorControlNodeTestPeer::enabled(*motor_));
+  EXPECT_TRUE(MotorControlNodeTestPeer::received(*motor_));
+  EXPECT_DOUBLE_EQ(MotorControlNodeTestPeer::linear(*motor_), 0.0);
+}
+
+TEST_F(MotorControlTopicsTest, CompletionAllowsNextCommandWithoutReenable)
+{
+  MotorControlNodeTestPeer::start(*motor_);
+  MotorControlNodeTestPeer::complete(*motor_);
+  EXPECT_TRUE(MotorControlNodeTestPeer::enabled(*motor_));
+  EXPECT_FALSE(MotorControlNodeTestPeer::received(*motor_));
+  EXPECT_DOUBLE_EQ(MotorControlNodeTestPeer::linear(*motor_), 0.0);
+  MotorControlNodeTestPeer::command(*motor_, -0.1, 0.0);
+  EXPECT_TRUE(MotorControlNodeTestPeer::enabled(*motor_));
+  EXPECT_DOUBLE_EQ(MotorControlNodeTestPeer::linear(*motor_), -0.1);
+}
+
+TEST_F(MotorControlTopicsTest, ExplicitCancelStillClosesMotionGate)
+{
+  MotorControlNodeTestPeer::start(*motor_);
+  MotorControlNodeTestPeer::cancel(*motor_);
+  EXPECT_EQ(MotorControlNodeTestPeer::test(*motor_).state(), "aborted");
+  EXPECT_FALSE(MotorControlNodeTestPeer::enabled(*motor_));
+  EXPECT_FALSE(MotorControlNodeTestPeer::received(*motor_));
+}
+
+TEST_F(MotorControlTopicsTest, LowMotorLimitDoesNotPreventNormalNodeStartup)
+{
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+    rclcpp::Parameter("enable_can", false),
+    rclcpp::Parameter("publish_odom_tf", false),
+    rclcpp::Parameter("max_motor_speed_rpm", 1.0)});
+  EXPECT_NO_THROW(std::make_shared<MotorControlNode>(options));
 }
 
 TEST_F(MotorControlTopicsTest, CommandWatchdogReportsInputGapSeparatelyFromFeedback)

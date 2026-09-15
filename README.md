@@ -45,6 +45,24 @@ per second, including `last_control_command`, `last_control_success`, and
 local command result, not a controller acknowledgement or a per-client reply.
 Failures are also logged even when `info` is false.
 
+`last_control_reply_state` separately reports controller replies. It defaults to
+`unavailable`, since the local G4 firmware does not acknowledge control writes.
+For firmware that replies to **every** `0x6040:00` write, set the startup-only
+parameter `expect_control_ack: true`. States then include `idle`, `pending`,
+`acknowledged`, `rejected`, `timed_out`, `transmission_failed`, and `ambiguous`.
+An enable event expects three acknowledgements; stop, reset, and emergency-stop
+events each expect one. `control_replies_remaining` and `control_abort_code`
+provide details. These fields describe control-word replies, not the initial
+zero-speed write, actual motor state, or completion of physical stopping.
+
+Acknowledgement tracking is diagnostic only; it does not delay commands or
+change the existing motion gates. Use it only with a single CAN command client
+and ordered, nonduplicated replies. Replies contain an object index and subindex
+but no command value or transaction ID. Overlapping events, internal safety
+commands, partial transmission failures, or a timeout make subsequent reply
+association ambiguous until the node restarts. A late reply cannot clear a
+timeout or confirm a later command. Stop events are still transmitted immediately.
+
 The node clamps targets to `max_motor_speed_rpm` and publishes zero RPM after
 `command_timeout_ms` without a valid command. See `config/motor_control.yaml`
 for geometry, gearing, motor inversion, limits, and timing parameters. The
@@ -58,6 +76,9 @@ default 135 RPM limit and 50 ms control period match the current
 | `can_interface` | `can0` | Linux SocketCAN network-interface name |
 | `can_receive_poll_ms` | `50` | Interval used to drain received CAN frames |
 | `feedback_timeout_ms` | `500` | Enabled-motion timeout for speed/position feedback |
+| `reply_timeout_ms` | `500` | Startup-only deadline for firmware and optional control replies |
+| `expect_control_ack` | `false` | Startup-only opt-in control acknowledgement diagnostics |
+| `expected_firmware_identifier` | empty | Startup-only optional identity comparison; mismatch produces a warning |
 | `odom_frame_id` / `base_frame_id` | `odom` / `base_link` | Odometry frame names |
 | `left_joint_name` / `right_joint_name` | wheel joint names | Joint-state names |
 | `publish_odom_tf` | `true` | Broadcast the `odom` to `base_link` transform |
@@ -172,12 +193,174 @@ because SocketCAN is disabled.
 Confirm `wheel_radius_m`, `wheel_separation_m`, `gear_ratio`, and motor
 inversion against the real platform before any hardware transport is enabled.
 
+## Built-in motion tests (version 1)
+
+The **existing `motor_control_node`** executes tests through an internal state
+machine. No additional ROS node or executable is launched. Tests are off by
+default, never start automatically, and never enable/reset motors themselves.
+
+| `motion_test/command` (`std_msgs/msg/String`) | Sequence |
+|---|---|
+| `straight` | Forward by `distance_m`, stop, reverse by the same distance, stop; repeat |
+| `rotate` | Turn left by `angle_deg`, stop, turn right by the same angle, stop; repeat |
+| `cancel` | Abort the active test, request zero speed and the existing ramp emergency stop |
+
+Commands use reliable, volatile QoS. Publish once after discovery; do not retain
+or periodically repeat start commands. Duplicate starts are rejected while a
+test is active. `motion_test/status` is a reliable, transient-local String topic
+that retains the latest status for late subscribers. It reports state, segment,
+reason, last stopped segment progress, total odometry displacement/yaw and CSV
+path. `diagnostics` also includes `motion_test_*` state fields.
+
+### Run on the robot
+
+Build and source the workspace as above. In the installed YAML (or your own
+copy), set `enable_can: true` and `motion_test.enabled: true`, after verifying
+CAN interface, geometry, direction inversion and RPM resolution. Alternatively,
+start the same executable explicitly:
+
+```bash
+ros2 run motor_control_g4dual motor_control_node --ros-args \
+  --params-file /absolute/path/to/motor_control.yaml \
+  -p enable_can:=true -p motion_test.enabled:=true
+```
+
+1. Stop navigation/teleoperation publishers of `cmd_vel`.
+2. Publish `enable_motors` once using the existing command shown above. Check
+   diagnostics for `motion_commands_enabled: true`, no safety latches and fresh
+   encoder-position **and** wheel-speed feedback. This is a local enable result,
+   not proof of hardware acknowledgement.
+3. Wait for standstill and for any previous `cmd_vel` to expire (default 500 ms).
+4. Observe status, then start **one** selected test:
+
+```bash
+ros2 topic echo /motion_test/status --qos-durability transient_local
+# In another terminal: forward/backward test
+ros2 topic pub --once /motion_test/command std_msgs/msg/String '{data: straight}'
+```
+
+For rotation, after the previous test finishes and motors are explicitly
+re-enabled, use:
+
+```bash
+ros2 topic pub --once /motion_test/command std_msgs/msg/String '{data: rotate}'
+```
+
+Cancel an active run with:
+
+```bash
+ros2 topic pub --once /motion_test/command std_msgs/msg/String '{data: cancel}'
+```
+
+All `motion_test.*` settings are startup-only; restart after changing them.
+Defaults are 1 m, 90 degrees, three forward/reverse or left/right pairs,
+0.1 m/s, 0.2 rad/s, acceleration limits 0.1 m/s² and 0.2 rad/s². The YAML lists
+all settings. Angles such as 180 or 360 degrees use continuous accumulated yaw.
+There is no upper-layer heading correction: these tests expose motor/platform
+asymmetry. Distance termination uses displacement projected on each segment's
+starting heading; reverse is measured from the actual stopped forward endpoint,
+not a navigation command back to the original pose.
+
+### Completion, interruption and recording
+
+- Initial motion and every direction change require both measured wheel speeds
+  to remain within `stop_rpm` for `settle_time_s` (defaults 0.5 RPM / 0.5 s).
+- Commands accelerate and decelerate within the configured limits. Distance and
+  angle tolerances start final deceleration; they are **not** guaranteed physical
+  endpoint accuracy. Coast/overshoot is retained in the stopped-segment result.
+- Each movement and each standstill wait has its own `segment_timeout_s`
+  (default 60 s). No directed progress for `stall_timeout_s` (5 s) aborts motion.
+  Increase the segment deadline for larger distances or slower speeds.
+- Absolute encoder data and wheel-speed data have independent freshness checks
+  using `feedback_timeout_ms`. A missed control tick beyond that deadline,
+  implausible encoder jump, or test speed-transmission error aborts the run.
+- Any external `cmd_vel` during a run aborts the test and discards that command,
+  including zero or invalid commands. Stop/reset/emergency-stop events also
+  terminate the run; an enable event during a run aborts and requires a new
+  explicit enable event. Ordinary `cmd_vel` behavior is unchanged outside tests.
+- Completion confirms measured standstill, requests zero speed and stop, and
+  closes the motion gate. Aborts request zero and the existing ramp emergency
+  stop; **aborted does not mean physical standstill has been confirmed**. Neither
+  path resumes automatically. Re-enable explicitly before subsequent motion.
+- Tests refuse to run with CAN disabled. Dry-run is not a simulated robot.
+
+Every accepted run creates a timestamped CSV under `motion_test.log_directory`
+(default `/tmp/motor_control_tests` on the machine running the node). Use a
+persistent writable directory to retain records across reboot. A file-open
+failure rejects the run; a detected write failure aborts it. Recording is
+synchronous at the control rate, so use local storage with predictable latency.
+A process/power failure may leave a partial log without a terminal row.
+
+The first CSV line is a `#` configuration comment. Remaining rows contain:
+
+- elapsed monotonic seconds, state, segment, progress and last stopped segment
+  progress (metres for straight tests, radians for rotation);
+- x/y displacement in the test's initial coordinate frame and continuous yaw;
+- commanded body velocities, direction-normalized left/right target RPM and
+  measured RPM, independent feedback ages, and reason.
+
+Segment numbers start at 1; odd segments are forward/left, even segments are
+reverse/right. Segment 0 is the initial standstill wait. When a segment settles,
+`last_stopped_segment_progress` captures its achieved distance/angle before the
+next segment starts. Subtract the configured target to inspect overshoot.
+Compare normalized target/actual RPM with feedback delay in mind; rows capture
+the latest received feedback, not time-synchronized motor measurements.
+
+`completed` means the sequence finished; it is not an accuracy pass/fail result.
+The CSV final displacement and yaw are **wheel odometry estimates**. Use ground
+marks or independent positioning to measure real drift and wheel slip. Version 1
+does not provide obstacle detection or an independent hardware watchdog.
+
+The state-machine scenarios can be tested without ROS:
+
+```bash
+c++ -std=c++17 -Wall -Wextra -Wpedantic -Iinclude \
+  test/test_motion_test.cpp -o /tmp/test_motion_test
+/tmp/test_motion_test
+```
+
+They are also registered in the normal `colcon test` run, together with ROS
+checks for test opt-in and rejection when CAN is disabled.
+
+## Reply handling and diagnostics
+
+On startup with CAN enabled, the node sends one read-only firmware query
+(`601#4031200000000000`). It accepts raw ASCII identification only while this
+query is pending. Write acknowledgements (`60 index-lo index-hi subindex 00 00
+00 00`) and aborts (`80 index-lo index-hi subindex code[4]`, little-endian) are
+decoded before text. Protocol-library callers must explicitly pass `true` as
+the third `decode` argument while their own firmware query is pending.
+
+Diagnostics include `firmware_query_state`, `firmware_identifier`,
+`firmware_identity_matches`, and the configured `rpm_resolution`. The current
+firmware identifier (`primax` in the local source) does not identify a build or
+report RPM scaling. Therefore `rpm_resolution_verified` remains `false`, even
+when the identifier matches. A mismatch or failed query does not gate motion.
+Verify the flashed controller's build and speed units before bench operation;
+the local firmware contract uses `0.1 RPM/unit`. Do not change a deployed
+`1.0` setting based solely on an identifier or these logs.
+
+Rejected-frame warnings include ID, length, bytes, and a readable reason, and
+are throttled to once per second. Diagnostics retain `rejected_frame_count`,
+`last_rejected_frame`, `last_rejected_reason`, `acknowledgement_count`,
+`abort_reply_count`, `last_acknowledgement`, and `last_abort_reply`. Accepted
+acknowledgements no longer generate firmware-info messages. Aborts are logged
+with their object and code and do not refresh the motor-feedback watchdog.
+
+`command_age_ms`, `command_timeout_ms`, `command_watchdog_expired`, and
+`command_timeout_count` describe missing command input separately from
+`feedback_age_ms`, `feedback_timeout_ms`, and `feedback_timeout_latched`.
+Use `candump -tz can0 > /tmp/motor-can.log` during a controlled bench test to
+correlate commands with replies and confirm which firmware protocol is deployed.
+
 ## Tests
 
 The normal test run covers differential-drive conversion, proportional RPM
 limiting, direction inversion, encoder rollover, CAN command encoding, reply
 decoding, malformed-frame rejection, and topic command delivery with dry-run
-failure diagnostics (including both emergency-stop values):
+failure diagnostics (including both emergency-stop values), the observed
+printable/binary acknowledgements, unsigned abort codes, pending-query text
+decoding, and acknowledgement timeouts/overlap handling:
 
 ```bash
 colcon test --packages-select motor_control_g4dual

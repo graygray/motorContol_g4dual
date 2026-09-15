@@ -48,6 +48,7 @@ target_link_libraries(socket_can_transport PUBLIC Threads::Threads)
 
 add_executable(motor_control_node
   src/motor_control_node.cpp
+  src/motor_control_motion_test.cpp
   src/main.cpp
 )
 target_compile_features(motor_control_node PUBLIC cxx_std_17)
@@ -96,6 +97,11 @@ if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
 
+  add_executable(test_motion_test test/test_motion_test.cpp)
+  target_compile_features(test_motion_test PUBLIC cxx_std_17)
+  target_include_directories(test_motion_test PRIVATE include)
+  add_test(NAME test_motion_test COMMAND test_motion_test)
+
   ament_add_gtest(test_differential_drive_kinematics
     test/test_differential_drive_kinematics.cpp
   )
@@ -108,9 +114,13 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_motor_can_protocol motor_can_protocol)
 
+  ament_add_gtest(test_control_reply_tracker test/test_control_reply_tracker.cpp)
+  target_link_libraries(test_control_reply_tracker motor_can_protocol)
+
   ament_add_gtest(test_motor_control_node
     test/test_motor_control_node.cpp
     src/motor_control_node.cpp
+    src/motor_control_motion_test.cpp
     TIMEOUT 60
   )
   target_compile_features(test_motor_control_node PUBLIC cxx_std_17)

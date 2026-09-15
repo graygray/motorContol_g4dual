@@ -9,6 +9,9 @@ motor_control:
     can_interface: can0
     can_receive_poll_ms: 50
     feedback_timeout_ms: 500
+    reply_timeout_ms: 500
+    expect_control_ack: false  # Enable only for firmware that acknowledges every control write
+    expected_firmware_identifier: ""  # Optional identity check; does not verify RPM scaling
     odom_frame_id: odom
     base_frame_id: base_link
     left_joint_name: left_wheel_joint
@@ -23,3 +26,20 @@ motor_control:
     invert_right_motor: true
     command_timeout_ms: 500
     control_period_ms: 50
+
+    # Built-in tests run inside motor_control_node. No automatic enable or start.
+    motion_test.enabled: false
+    motion_test.distance_m: 1.0
+    motion_test.angle_deg: 90.0
+    motion_test.repetitions: 3  # Each repetition is forward/backward or left/right
+    motion_test.linear_speed_mps: 0.1
+    motion_test.angular_speed_radps: 0.2
+    motion_test.linear_accel_mps2: 0.1
+    motion_test.angular_accel_radps2: 0.2
+    motion_test.distance_tolerance_m: 0.01
+    motion_test.angle_tolerance_rad: 0.02
+    motion_test.settle_time_s: 0.5
+    motion_test.stop_rpm: 0.5
+    motion_test.segment_timeout_s: 60.0
+    motion_test.stall_timeout_s: 5.0
+    motion_test.log_directory: /tmp/motor_control_tests

@@ -79,6 +79,19 @@ struct FirmwareReply
   std::string identifier;
 };
 
+struct WriteAcknowledgement
+{
+  std::uint16_t index{0U};
+  std::uint8_t subindex{0U};
+};
+
+struct AbortReply
+{
+  std::uint16_t index{0U};
+  std::uint8_t subindex{0U};
+  std::uint32_t code{0U};
+};
+
 struct WheelSpeedsReply
 {
   double m1_speed_rpm{0.0};
@@ -109,7 +122,9 @@ using DecodedCanMessage = std::variant<
   WheelSpeedsReply,
   EncoderDeltasReply,
   EncoderPositionReport,
-  MotorFaultReport>;
+  MotorFaultReport,
+  WriteAcknowledgement,
+  AbortReply>;
 
 enum class DecodeStatus
 {
@@ -117,6 +132,7 @@ enum class DecodeStatus
   kUnsupportedId,
   kInvalidLength,
   kInvalidPayload,
+  kUnexpectedReply,
 };
 
 struct DecodeResult
@@ -163,7 +179,10 @@ public:
   static CanFrame encode_wheel_speeds_request();
   static CanFrame encode_encoder_deltas_request();
   static DecodeResult decode(
-    const CanFrame & frame, double rpm_resolution = kDefaultRpmResolution);
+    const CanFrame & frame, double rpm_resolution = kDefaultRpmResolution,
+    bool firmware_request_pending = false);
+  static const char * decode_status_name(DecodeStatus status);
+  static std::string format_frame(const CanFrame & frame);
 
 private:
   static std::optional<std::int16_t> encode_speed_units(

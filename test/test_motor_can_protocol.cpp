@@ -136,7 +136,7 @@ TEST(MotorCanProtocol, EncodesConfigurationAndReadRequests)
 TEST(MotorCanProtocol, DecodesReplyPayloads)
 {
   const auto firmware = MotorCanProtocol::decode(
-    {MotorCanProtocol::kReplyId, 8U, {'p', 'r', 'i', 'm', 'a', 'x', 0U, 0U}});
+    {MotorCanProtocol::kReplyId, 8U, {'p', 'r', 'i', 'm', 'a', 'x', 0U, 0U}}, 0.1, true);
   ASSERT_TRUE(firmware);
   EXPECT_EQ(std::get<FirmwareReply>(*firmware.message).identifier, "primax");
 
@@ -154,6 +154,66 @@ TEST(MotorCanProtocol, DecodesReplyPayloads)
   ASSERT_TRUE(deltas);
   EXPECT_EQ(std::get<EncoderDeltasReply>(*deltas.message).m1_delta, 100);
   EXPECT_EQ(std::get<EncoderDeltasReply>(*deltas.message).m2_delta, -50);
+}
+
+TEST(MotorCanProtocol, RecognizesAcknowledgementsBeforeFirmwareText)
+{
+  for (const bool pending : {false, true}) {
+    // Includes both printable replies observed on hardware and a binary index.
+    for (const std::uint16_t index : {0x6040U, 0x6060U, 0x60FFU}) {
+      const auto decoded = MotorCanProtocol::decode(
+        {0x581U, 8U, {0x60U, static_cast<std::uint8_t>(index & 0xFFU),
+            static_cast<std::uint8_t>(index >> 8U), 0U, 0U, 0U, 0U, 0U}}, 0.1, pending);
+      ASSERT_TRUE(decoded);
+      ASSERT_TRUE(std::holds_alternative<WriteAcknowledgement>(*decoded.message));
+      EXPECT_EQ(std::get<WriteAcknowledgement>(*decoded.message).index, index);
+      EXPECT_EQ(std::get<WriteAcknowledgement>(*decoded.message).subindex, 0U);
+    }
+  }
+}
+
+TEST(MotorCanProtocol, DecodesAbortObjectAndUnsignedCode)
+{
+  const auto decoded = MotorCanProtocol::decode(
+    {0x581U, 8U, {0x80U, 0x40U, 0x60U, 0x02U, 0x78U, 0x56U, 0x34U, 0xF2U}});
+  ASSERT_TRUE(decoded);
+  const auto reply = std::get<AbortReply>(*decoded.message);
+  EXPECT_EQ(reply.index, 0x6040U);
+  EXPECT_EQ(reply.subindex, 2U);
+  EXPECT_EQ(reply.code, 0xF2345678U);
+}
+
+TEST(MotorCanProtocol, RequiresPendingQueryForFirmware)
+{
+  const CanFrame firmware{0x581U, 8U, {'p', 'r', 'i', 'm', 'a', 'x', 0U, 0U}};
+  EXPECT_EQ(MotorCanProtocol::decode(firmware).status, DecodeStatus::kUnexpectedReply);
+  ASSERT_TRUE(MotorCanProtocol::decode(firmware, 0.1, true));
+  const CanFrame full{0x581U, 8U, {'f', 'i', 'r', 'm', 'w', 'a', 'r', 'e'}};
+  ASSERT_TRUE(MotorCanProtocol::decode(full, 0.1, true));
+  EXPECT_EQ(std::get<FirmwareReply>(
+      *MotorCanProtocol::decode(full, 0.1, true).message).identifier, "firmware");
+  for (const CanFrame invalid : {
+      CanFrame{0x581U, 8U, {}},
+      CanFrame{0x581U, 8U, {'o', 'k', 0U, 'x', 0U, 0U, 0U, 0U}},
+      CanFrame{0x581U, 8U, {'x', 0xFFU, 0U, 0U, 0U, 0U, 0U, 0U}}})
+  {
+    EXPECT_EQ(MotorCanProtocol::decode(invalid, 0.1, true).status,
+      DecodeStatus::kInvalidPayload);
+  }
+}
+
+TEST(MotorCanProtocol, RejectsMalformedAcknowledgementsAndFormatsRawFrame)
+{
+  const CanFrame invalid{0x581U, 8U, {0x60U, 0x40U, 0x60U, 0U, 1U, 0U, 0U, 0U}};
+  EXPECT_EQ(MotorCanProtocol::decode(invalid, 0.1, true).status, DecodeStatus::kInvalidPayload);
+  EXPECT_EQ(MotorCanProtocol::format_frame(invalid),
+    "id=0x581 length=8 data=60 40 60 00 01 00 00 00");
+  EXPECT_EQ(MotorCanProtocol::decode({0x581U, 3U, {0x60U, 0x40U, 0x60U}}).status,
+    DecodeStatus::kInvalidLength);
+  EXPECT_EQ(MotorCanProtocol::format_frame({0x581U, 3U, {0x60U, 0x40U, 0x60U}}),
+    "id=0x581 length=3 data=60 40 60");
+  EXPECT_EQ(MotorCanProtocol::format_frame({0x581U, 255U, {}}),
+    "id=0x581 length=255 data=00 00 00 00 00 00 00 00");
 }
 
 TEST(MotorCanProtocol, DecodesEncoderAndFaultReports)

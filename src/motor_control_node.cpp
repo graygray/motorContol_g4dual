@@ -76,6 +76,23 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool inf
     throw std::invalid_argument("rpm_resolution must be 1.0 or 0.1 RPM per CAN unit");
   }
 
+  rcl_interfaces::msg::ParameterDescriptor startup_descriptor;
+  startup_descriptor.read_only = true;
+  startup_descriptor.description = "Expect one acknowledgement per control write; diagnostics only";
+  const bool expect_control_ack = declare_parameter<bool>(
+    "expect_control_ack", false, startup_descriptor);
+  startup_descriptor.description = "Reply deadline in milliseconds";
+  const int reply_timeout_ms = declare_parameter<int>(
+    "reply_timeout_ms", 500, startup_descriptor);
+  startup_descriptor.description = "Optional expected raw firmware identifier";
+  expected_firmware_identifier_ = declare_parameter<std::string>(
+    "expected_firmware_identifier", "", startup_descriptor);
+  if (reply_timeout_ms <= 0) {
+    throw std::invalid_argument("reply_timeout_ms must be positive");
+  }
+  control_replies_ = ControlReplyTracker(
+    enable_can_ && expect_control_ack, std::chrono::milliseconds(reply_timeout_ms));
+
   const auto command_timeout_ms = declare_parameter<int>("command_timeout_ms", 500);
   const auto control_period_ms = declare_parameter<int>("control_period_ms", 50);
   const auto can_receive_poll_ms = declare_parameter<int>("can_receive_poll_ms", 50);
@@ -151,6 +168,25 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool inf
     "emergency_stop", control_qos,
     std::bind(&MotorControlNode::set_emergency_stop, this, std::placeholders::_1));
 
+  configure_motion_test();
+
+  if (enable_can_) {
+    std::string error_message;
+    if (can_transport_->send_command(
+        MotorCanProtocol::encode_firmware_version_request(), error_message))
+    {
+      firmware_query_state_ = "pending";
+      firmware_deadline_ = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(reply_timeout_ms);
+    } else {
+      firmware_query_state_ = "transmission_failed";
+      RCLCPP_WARN(get_logger(), "Firmware query transmission failed: %s", error_message.c_str());
+    }
+    RCLCPP_INFO(
+      get_logger(), "Configured CAN speed resolution: %.1f RPM/unit (not verified by firmware)",
+      rpm_resolution_);
+  }
+
   if (get_parameter("info").as_bool()) {
     RCLCPP_INFO(
       get_logger(),
@@ -162,6 +198,13 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool inf
 
 MotorControlNode::~MotorControlNode()
 {
+  try {
+    abort_motion_test("node shutdown");
+  } catch (const std::exception & error) {
+    // ROS publishers may already be invalid after context shutdown. Always
+    // continue to the direct CAN zero/stop sequence below.
+    RCLCPP_WARN(get_logger(), "Could not finalize motion test at shutdown: %s", error.what());
+  }
   if (!can_transport_ || !can_transport_->is_open()) {
     if (get_parameter("info").as_bool()) {
       RCLCPP_INFO(get_logger(), "Node shutting down; no open CAN transport to stop");
@@ -187,6 +230,10 @@ MotorControlNode::~MotorControlNode()
 
 void MotorControlNode::command_callback(const geometry_msgs::msg::Twist::SharedPtr message)
 {
+  if (motion_test_.active()) {
+    abort_motion_test("external cmd_vel received; command discarded");
+    return;
+  }
   if (!std::isfinite(message->linear.x) || !std::isfinite(message->angular.z)) {
     RCLCPP_WARN(get_logger(), "Ignoring cmd_vel containing a non-finite value");
     return;
@@ -205,13 +252,25 @@ void MotorControlNode::command_callback(const geometry_msgs::msg::Twist::SharedP
 void MotorControlNode::control_callback()
 {
   const auto now = std::chrono::steady_clock::now();
+  check_reply_timeouts();
   check_feedback_timeout(now);
+  if (motion_test_.active()) {
+    update_motion_test();
+    return;
+  }
   if (!command_received_ || now - last_command_time_ > command_timeout_) {
     if (!watchdog_stopped_) {
       publish_motor_rpm(0.0, 0.0);
       watchdog_stopped_ = true;
       if (command_received_) {
-        RCLCPP_WARN(get_logger(), "Command watchdog expired; requesting zero motor speed");
+        ++command_timeout_count_;
+        const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+          now - last_command_time_).count();
+        RCLCPP_WARN(
+          get_logger(),
+          "Command watchdog expired: age=%lld ms, limit=%lld ms; requesting zero speed",
+          static_cast<long long>(age), static_cast<long long>(command_timeout_.count()));
+        publish_diagnostics();
       }
     }
     return;
@@ -251,6 +310,7 @@ void MotorControlNode::publish_motor_rpm(double left_rpm, double right_rpm)
     RCLCPP_ERROR_THROTTLE(
       get_logger(), *get_clock(), 1000, "CAN command transmission failed: %s",
       error_message.c_str());
+    abort_motion_test("CAN speed transmission failed");
   } else {
     RCLCPP_DEBUG_THROTTLE(
       get_logger(), *get_clock(), 1000, "CAN speed command transmitted on 0x%03X", frame->id);
@@ -270,20 +330,67 @@ void MotorControlNode::receive_can_frames()
     if (receive_status == ReceiveStatus::kError) {
       RCLCPP_ERROR_THROTTLE(
         get_logger(), *get_clock(), 1000, "CAN receive failed: %s", error_message.c_str());
+      abort_motion_test("CAN receive failed");
       return;
     }
 
-    const auto decoded = MotorCanProtocol::decode(frame, rpm_resolution_);
+    check_reply_timeouts();
+    const auto decoded = MotorCanProtocol::decode(
+      frame, rpm_resolution_, firmware_query_state_ == "pending");
     if (!decoded) {
+      ++rejected_frame_count_;
+      last_rejected_frame_ = MotorCanProtocol::format_frame(frame);
+      last_rejected_reason_ = MotorCanProtocol::decode_status_name(decoded.status);
       RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 1000,
-        "Ignoring malformed CAN frame 0x%03X (decode status %u)", frame.id,
-        static_cast<unsigned int>(decoded.status));
+        get_logger(), *get_clock(), 1000, "Ignoring CAN frame: %s; %s (rejected=%llu)",
+        last_rejected_frame_.c_str(), last_rejected_reason_.c_str(),
+        static_cast<unsigned long long>(rejected_frame_count_));
       continue;
     }
 
     const auto stamp = now();
-    if (const auto * reply = std::get_if<FirmwareReply>(&*decoded.message)) {
+    if (const auto * reply = std::get_if<WriteAcknowledgement>(&*decoded.message)) {
+      ++acknowledgement_count_;
+      last_acknowledgement_ = MotorCanProtocol::format_frame(frame);
+      const auto previous_state = control_replies_.state();
+      control_replies_.observe(
+        reply->index, reply->subindex, false, 0U, std::chrono::steady_clock::now());
+      if (previous_state != control_replies_.state()) {
+        publish_diagnostics();
+      }
+    } else if (const auto * reply = std::get_if<AbortReply>(&*decoded.message)) {
+      ++abort_reply_count_;
+      last_abort_reply_ = MotorCanProtocol::format_frame(frame);
+      const auto previous_control_state = control_replies_.state();
+      const auto previous_firmware_state = firmware_query_state_;
+      control_replies_.observe(
+        reply->index, reply->subindex, true, reply->code, std::chrono::steady_clock::now());
+      if (reply->index == 0x2031U && reply->subindex == 0U &&
+        firmware_query_state_ == "pending")
+      {
+        firmware_query_state_ = "rejected";
+      }
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Controller abort: object=0x%04X:%02X code=0x%08X; %s",
+        static_cast<unsigned int>(reply->index), static_cast<unsigned int>(reply->subindex),
+        static_cast<unsigned int>(reply->code), last_abort_reply_.c_str());
+      if (previous_control_state != control_replies_.state() ||
+        previous_firmware_state != firmware_query_state_)
+      {
+        publish_diagnostics();
+      }
+    } else if (const auto * reply = std::get_if<FirmwareReply>(&*decoded.message)) {
+      firmware_query_state_ = "received";
+      firmware_identifier_ = reply->identifier;
+      if (!expected_firmware_identifier_.empty() &&
+        firmware_identifier_ != expected_firmware_identifier_)
+      {
+        RCLCPP_WARN(
+          get_logger(), "Firmware identifier mismatch: expected '%s', received '%s'",
+          expected_firmware_identifier_.c_str(), firmware_identifier_.c_str());
+      }
+      publish_diagnostics();
       if (get_parameter("info").as_bool()) {
         RCLCPP_INFO(
           get_logger(), "Motor-controller firmware identifier: %s",
@@ -291,6 +398,7 @@ void MotorControlNode::receive_can_frames()
       }
     } else if (const auto * reply = std::get_if<WheelSpeedsReply>(&*decoded.message)) {
       latest_wheel_speeds_ = *reply;
+      last_speed_time_ = std::chrono::steady_clock::now();
       last_feedback_time_ = std::chrono::steady_clock::now();
       feedback_received_ = true;
       publish_wheel_speeds(*reply, stamp);
@@ -325,6 +433,11 @@ void MotorControlNode::receive_can_frames()
 void MotorControlNode::enable_motors(const std_msgs::msg::Empty::SharedPtr message)
 {
   static_cast<void>(message);
+  if (motion_test_.active()) {
+    abort_motion_test("enable event during test");
+    report_control_result("enable_motors", false, "Test interrupted; enable again explicitly");
+    return;
+  }
   if (!enable_can_) {
     report_control_result("enable_motors", false, "SocketCAN is disabled");
     return;
@@ -337,6 +450,7 @@ void MotorControlNode::enable_motors(const std_msgs::msg::Empty::SharedPtr messa
   }
 
   std::string error_message;
+  control_replies_.begin(3U, std::chrono::steady_clock::now());
   const ControlCommand sequence[] = {
     ControlCommand::kEnableStage1,
     ControlCommand::kEnableStage2,
@@ -368,27 +482,32 @@ void MotorControlNode::enable_motors(const std_msgs::msg::Empty::SharedPtr messa
   motion_commands_enabled_ = true;
   report_control_result(
     "enable_motors", true,
-    "Enable sequence transmitted; controller acknowledgement is unavailable");
+    "Enable sequence transmitted; see last_control_reply_state for controller reply status");
 }
 
 void MotorControlNode::stop_motors(const std_msgs::msg::Empty::SharedPtr message)
 {
+  abort_motion_test("stop_motors event");
   static_cast<void>(message);
   motion_commands_enabled_ = false;
   command_received_ = false;
   std::string error_message;
+  control_replies_.begin(1U, std::chrono::steady_clock::now());
   const bool success = send_control_command(ControlCommand::kStop, error_message);
   report_control_result(
     "stop_motors", success, success ?
-    "Stop command transmitted; controller acknowledgement is unavailable" : error_message);
+    "Stop command transmitted; see last_control_reply_state for controller reply status" :
+    error_message);
 }
 
 void MotorControlNode::reset_faults(const std_msgs::msg::Empty::SharedPtr message)
 {
+  abort_motion_test("reset_faults event");
   static_cast<void>(message);
   motion_commands_enabled_ = false;
   command_received_ = false;
   std::string error_message;
+  control_replies_.begin(1U, std::chrono::steady_clock::now());
   if (!send_control_command(ControlCommand::kResetFaults, error_message)) {
     report_control_result("reset_faults", false, error_message);
     return;
@@ -400,16 +519,19 @@ void MotorControlNode::reset_faults(const std_msgs::msg::Empty::SharedPtr messag
   last_feedback_time_ = std::chrono::steady_clock::now();
   report_control_result(
     "reset_faults", true,
-    "Fault reset transmitted; controller acknowledgement is unavailable; enable is still required");
+    "Fault reset transmitted; see last_control_reply_state for controller reply status; "
+    "enable is still required");
 }
 
 void MotorControlNode::set_emergency_stop(const std_msgs::msg::Bool::SharedPtr message)
 {
+  abort_motion_test("emergency_stop event");
   motion_commands_enabled_ = false;
   command_received_ = false;
   const auto command = message->data ?
     ControlCommand::kEmergencyStop : ControlCommand::kEnableOperation;
   std::string error_message;
+  control_replies_.begin(1U, std::chrono::steady_clock::now());
   if (!send_control_command(command, error_message)) {
     report_control_result("emergency_stop", false, error_message);
     return;
@@ -428,6 +550,7 @@ void MotorControlNode::report_control_result(
   last_control_success_ = success;
   last_control_message_ = message;
   if (!success) {
+    control_replies_.transmission_failed();
     RCLCPP_ERROR(get_logger(), "%s failed: %s", command, message.c_str());
   } else if (get_parameter("info").as_bool()) {
     RCLCPP_INFO(get_logger(), "%s: %s", command, message.c_str());
@@ -467,13 +590,18 @@ void MotorControlNode::check_feedback_timeout(std::chrono::steady_clock::time_po
   }
 
   feedback_timeout_latched_ = true;
-  RCLCPP_ERROR(get_logger(), "Motor feedback timed out; latching an emergency stop");
+  const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+    now - last_feedback_time_).count();
+  RCLCPP_ERROR(
+    get_logger(), "Motor feedback timed out: age=%lld ms, limit=%lld ms; latching emergency stop",
+    static_cast<long long>(age), static_cast<long long>(feedback_timeout_.count()));
   latch_safety_stop("feedback timeout");
   publish_diagnostics();
 }
 
 void MotorControlNode::latch_safety_stop(const char * reason)
 {
+  abort_motion_test(reason);
   const bool was_enabled = motion_commands_enabled_;
   motion_commands_enabled_ = false;
   command_received_ = false;
@@ -485,6 +613,7 @@ void MotorControlNode::latch_safety_stop(const char * reason)
   }
 
   RCLCPP_WARN(get_logger(), "Latching safety stop: %s", reason);
+  control_replies_.interrupt();
 
   std::string error_message;
   if (!send_control_command(ControlCommand::kEmergencyStop, error_message)) {
@@ -571,6 +700,7 @@ void MotorControlNode::update_encoder_odometry(
         "Rebasing after implausible encoder jump (left=%lld, right=%lld counts)",
         static_cast<long long>(wheel_delta.left),
         static_cast<long long>(wheel_delta.right));
+      abort_motion_test("implausible encoder jump");
       return;
     }
 
@@ -583,12 +713,14 @@ void MotorControlNode::update_encoder_odometry(
     const double right_distance_m = right_delta_rad * wheel_radius_m_;
     const double distance_m = (left_distance_m + right_distance_m) / 2.0;
     const double yaw_delta = (right_distance_m - left_distance_m) / wheel_separation_m_;
+    odom_continuous_yaw_ += yaw_delta;
     odom_x_m_ += distance_m * std::cos(odom_yaw_rad_ + yaw_delta / 2.0);
     odom_y_m_ += distance_m * std::sin(odom_yaw_rad_ + yaw_delta / 2.0);
     odom_yaw_rad_ = std::atan2(
       std::sin(odom_yaw_rad_ + yaw_delta), std::cos(odom_yaw_rad_ + yaw_delta));
   }
 
+  last_odom_time_ = std::chrono::steady_clock::now();
   WheelPair wheel_rpm;
   if (latest_wheel_speeds_) {
     wheel_rpm = kinematics_->motor_values_to_wheel(
@@ -659,8 +791,19 @@ void MotorControlNode::publish_motor_fault(const MotorFaultReport & report)
   }
 }
 
+void MotorControlNode::check_reply_timeouts()
+{
+  const auto current = std::chrono::steady_clock::now();
+  control_replies_.expire(current);
+  if (firmware_query_state_ == "pending" && current >= firmware_deadline_) {
+    firmware_query_state_ = "timed_out";
+    RCLCPP_WARN(get_logger(), "Firmware query timed out; controller identity remains unknown");
+  }
+}
+
 void MotorControlNode::publish_diagnostics()
 {
+  check_reply_timeouts();
   diagnostic_msgs::msg::DiagnosticArray array;
   array.header.stamp = now();
   diagnostic_msgs::msg::DiagnosticStatus status;
@@ -679,9 +822,23 @@ void MotorControlNode::publish_diagnostics()
   } else if (!motion_commands_enabled_) {
     status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
     status.message = "Motor commands safely gated";
+  } else if (command_received_ && watchdog_stopped_) {
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+    status.message = "Command input timed out; zero speed requested";
   } else {
     status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
     status.message = "Motor control enabled";
+  }
+  const bool firmware_mismatch = !expected_firmware_identifier_.empty() &&
+    !firmware_identifier_.empty() && firmware_identifier_ != expected_firmware_identifier_;
+  const auto & reply_state = control_replies_.state();
+  if (status.level == diagnostic_msgs::msg::DiagnosticStatus::OK &&
+    (firmware_mismatch || reply_state == "rejected" || reply_state == "timed_out" ||
+    reply_state == "ambiguous" || reply_state == "transmission_failed"))
+  {
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+    status.message = firmware_mismatch ? "Firmware identifier mismatch" :
+      "Controller reply status: " + reply_state;
   }
 
   const auto add_value =
@@ -696,6 +853,35 @@ void MotorControlNode::publish_diagnostics()
     add_value("last_control_success", *last_control_success_ ? "true" : "false");
     add_value("last_control_message", last_control_message_);
   }
+  add_value("motion_test_state", motion_test_.state());
+  add_value("motion_test_kind", motion_test_.kind());
+  add_value("motion_test_segment", std::to_string(motion_test_.segment()));
+  add_value("motion_test_reason", motion_test_.reason());
+  add_value("motion_test_log", motion_test_log_path_);
+  add_value("last_control_reply_state", reply_state);
+  add_value("control_replies_remaining", std::to_string(control_replies_.remaining()));
+  add_value("control_abort_code", std::to_string(control_replies_.abort_code()));
+  add_value("firmware_query_state", firmware_query_state_);
+  add_value("firmware_identifier", firmware_identifier_.empty() ? "unknown" : firmware_identifier_);
+  add_value("expected_firmware_identifier", expected_firmware_identifier_);
+  add_value("firmware_identity_matches", expected_firmware_identifier_.empty() ||
+    firmware_identifier_.empty() ? "unknown" : (firmware_mismatch ? "false" : "true"));
+  add_value("rpm_resolution_verified", "false");
+  add_value("rejected_frame_count", std::to_string(rejected_frame_count_));
+  add_value("acknowledgement_count", std::to_string(acknowledgement_count_));
+  add_value("abort_reply_count", std::to_string(abort_reply_count_));
+  add_value("last_rejected_frame", last_rejected_frame_);
+  add_value("last_rejected_reason", last_rejected_reason_);
+  add_value("last_acknowledgement", last_acknowledgement_);
+  add_value("last_abort_reply", last_abort_reply_);
+  add_value("command_received", command_received_ ? "true" : "false");
+  add_value("command_watchdog_expired", command_received_ && watchdog_stopped_ ? "true" : "false");
+  add_value("command_timeout_count", std::to_string(command_timeout_count_));
+  add_value("command_timeout_ms", std::to_string(command_timeout_.count()));
+  add_value("feedback_timeout_ms", std::to_string(feedback_timeout_.count()));
+  add_value("command_age_ms", command_received_ ? std::to_string(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - last_command_time_).count()) : "never");
   add_value("can_interface", can_interface_);
   add_value("rpm_resolution", std::to_string(rpm_resolution_));
   add_value("can_enabled", enable_can_ ? "true" : "false");

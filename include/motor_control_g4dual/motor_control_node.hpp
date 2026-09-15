@@ -4,17 +4,21 @@
 #pragma once
 
 #include <chrono>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <string>
 
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "motor_control_g4dual/control_reply_tracker.hpp"
 #include "motor_control_g4dual/differential_drive_kinematics.hpp"
 #include "motor_control_g4dual/socket_can_transport.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
+#include "motor_control_g4dual/motion_test.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
@@ -51,6 +55,26 @@ private:
     const EncoderPositionReport & report, const rclcpp::Time & stamp);
   void publish_motor_fault(const MotorFaultReport & report);
   void publish_diagnostics();
+  void check_reply_timeouts();
+
+  void configure_motion_test();
+  void motion_test_command(const std_msgs::msg::String::SharedPtr message);
+  MotionTest::Sample motion_test_sample() const;
+  void update_motion_test();
+  void abort_motion_test(const std::string & reason);
+  void finish_motion_test();
+  void record_motion_test();
+  void publish_motion_test_status(const std::string & event);
+
+  MotionTest motion_test_;
+  MotionTest::Config motion_test_config_;
+  bool motion_test_allowed_{false};
+  std::string motion_test_log_directory_, motion_test_log_path_;
+  std::ofstream motion_test_log_;
+  double odom_continuous_yaw_{0.0};
+  std::chrono::steady_clock::time_point last_odom_time_{}, last_speed_time_{};
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr motion_test_subscription_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr motion_test_status_publisher_;
 
   std::string command_topic_;
   std::string motor_rpm_topic_;
@@ -115,6 +139,19 @@ private:
   std::string last_control_command_;
   std::optional<bool> last_control_success_;
   std::string last_control_message_;
+  ControlReplyTracker control_replies_;
+  std::string firmware_query_state_{"disabled"};
+  std::string firmware_identifier_;
+  std::string expected_firmware_identifier_;
+  std::chrono::steady_clock::time_point firmware_deadline_{};
+  std::uint64_t rejected_frame_count_{0U};
+  std::uint64_t acknowledgement_count_{0U};
+  std::uint64_t abort_reply_count_{0U};
+  std::uint64_t command_timeout_count_{0U};
+  std::string last_rejected_frame_;
+  std::string last_rejected_reason_;
+  std::string last_acknowledgement_;
+  std::string last_abort_reply_;
 };
 
 }  // namespace motor_control_g4dual

@@ -120,5 +120,107 @@ TEST_F(MotorControlTopicsTest, EmergencyStopReleaseKeepsMotionDisabled)
   expect_disabled_result("emergency_stop", message);
 }
 
+TEST_F(MotorControlTopicsTest, DiagnosticsKeepUnknownFirmwareAndScaleExplicit)
+{
+  ASSERT_TRUE(spin_until([&]() {return values_.count("firmware_query_state") != 0U;}));
+  EXPECT_EQ(values_["firmware_query_state"], "disabled");
+  EXPECT_EQ(values_["firmware_identifier"], "unknown");
+  EXPECT_EQ(values_["firmware_identity_matches"], "unknown");
+  EXPECT_EQ(values_["rpm_resolution_verified"], "false");
+  EXPECT_EQ(values_["last_control_reply_state"], "unavailable");
+  EXPECT_EQ(values_["rejected_frame_count"], "0");
+  EXPECT_EQ(values_["acknowledgement_count"], "0");
+  EXPECT_EQ(values_["abort_reply_count"], "0");
+  EXPECT_EQ(values_["command_age_ms"], "never");
+  EXPECT_EQ(values_["feedback_age_ms"], "never");
+  const auto results = motor_->set_parameters({
+      rclcpp::Parameter("expect_control_ack", true),
+      rclcpp::Parameter("reply_timeout_ms", 100),
+      rclcpp::Parameter("expected_firmware_identifier", "primax")});
+  ASSERT_EQ(results.size(), 3U);
+  for (const auto & result : results) {
+    EXPECT_FALSE(result.successful);
+  }
+}
+
+TEST_F(MotorControlTopicsTest, BuiltInTestRejectsDisabledStartAndKeepsMotionGated)
+{
+  std::string status;
+  auto subscription = client_->create_subscription<std_msgs::msg::String>(
+    "motion_test/status", rclcpp::QoS(1).reliable().transient_local(),
+    [&status](const std_msgs::msg::String::SharedPtr message) {status = message->data;});
+  auto publisher = client_->create_publisher<std_msgs::msg::String>(
+    "motion_test/command", rclcpp::QoS(10).reliable().durability_volatile());
+  ASSERT_TRUE(spin_until([&]() {
+    return publisher->get_subscription_count() == 1U && !status.empty();
+  }));
+  for (const auto * kind : {"straight", "rotate"}) {
+    status.clear();
+    std_msgs::msg::String command;
+    command.data = kind;
+    publisher->publish(command);
+    ASSERT_TRUE(spin_until([&]() {
+      return status.find("rejected: motion_test.enabled is false") != std::string::npos;
+    }));
+    EXPECT_NE(status.find("state=idle"), std::string::npos);
+  }
+  const auto result = motor_->set_parameters({rclcpp::Parameter("motion_test.enabled", true)});
+  ASSERT_EQ(result.size(), 1U);
+  EXPECT_FALSE(result.front().successful);
+  ASSERT_TRUE(spin_until([&]() {return values_.count("motion_test_state") != 0U;}));
+  EXPECT_EQ(values_["motion_test_state"], "idle");
+  EXPECT_EQ(values_["motion_commands_enabled"], "false");
+}
+
+TEST_F(MotorControlTopicsTest, BuiltInTestOptInStillRequiresPhysicalCan)
+{
+  executor_->remove_node(motor_);
+  motor_.reset();
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+    rclcpp::Parameter("enable_can", false),
+    rclcpp::Parameter("publish_odom_tf", false),
+    rclcpp::Parameter("motion_test.enabled", true)});
+  motor_ = std::make_shared<MotorControlNode>(options);
+  executor_->add_node(motor_);
+  std::string status;
+  auto subscription = client_->create_subscription<std_msgs::msg::String>(
+    "motion_test/status", rclcpp::QoS(1).reliable().transient_local(),
+    [&status](const std_msgs::msg::String::SharedPtr message) {status = message->data;});
+  auto publisher = client_->create_publisher<std_msgs::msg::String>("motion_test/command", 10);
+  ASSERT_TRUE(spin_until([&]() {
+    return publisher->get_subscription_count() == 1U && !status.empty();
+  }));
+  std_msgs::msg::String command;
+  command.data = "straight";
+  publisher->publish(command);
+  ASSERT_TRUE(spin_until([&]() {
+    return status.find("rejected: CAN and explicitly enabled motors") != std::string::npos;
+  }));
+  EXPECT_NE(status.find("state=idle"), std::string::npos);
+}
+
+TEST_F(MotorControlTopicsTest, CommandWatchdogReportsInputGapSeparatelyFromFeedback)
+{
+  auto publisher = client_->create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
+  ASSERT_TRUE(spin_until([&]() {return publisher->get_subscription_count() == 1U;}));
+  publisher->publish(geometry_msgs::msg::Twist{});
+  ASSERT_TRUE(spin_until([&]() {return values_["command_watchdog_expired"] == "true";}));
+  EXPECT_EQ(values_["command_timeout_count"], "1");
+  EXPECT_EQ(values_["command_timeout_ms"], "500");
+  EXPECT_GE(std::stoll(values_["command_age_ms"]), 500);
+  EXPECT_EQ(values_["feedback_age_ms"], "never");
+  EXPECT_EQ(values_["feedback_timeout_latched"], "false");
+
+  // Continuous fresh input recovers the command watchdog without changing the
+  // feedback watchdog or incrementing the expiration counter again.
+  auto timer = client_->create_wall_timer(std::chrono::milliseconds(50), [&]() {
+      publisher->publish(geometry_msgs::msg::Twist{});
+    });
+  ASSERT_TRUE(spin_until([&]() {return values_["command_watchdog_expired"] == "false";}));
+  EXPECT_EQ(values_["command_timeout_count"], "1");
+  EXPECT_EQ(values_["feedback_timeout_latched"], "false");
+}
+
 }  // namespace
 }  // namespace motor_control_g4dual

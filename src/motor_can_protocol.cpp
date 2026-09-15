@@ -3,8 +3,11 @@
 
 #include "motor_control_g4dual/motor_can_protocol.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <type_traits>
 
 namespace motor_control_g4dual
@@ -52,8 +55,26 @@ std::int32_t read_int32_little_endian(
   return static_cast<std::int32_t>(static_cast<std::int64_t>(value) - 0x100000000LL);
 }
 
-DecodeResult decode_reply(const CanFrame & frame, double rpm_resolution)
+DecodeResult decode_reply(
+  const CanFrame & frame, double rpm_resolution, bool firmware_request_pending)
 {
+  const auto index = static_cast<std::uint16_t>(
+    frame.data[1] | (static_cast<std::uint16_t>(frame.data[2]) << 8U));
+  if (frame.data[0] == 0x60U) {
+    if (!std::all_of(frame.data.begin() + 4, frame.data.end(),
+      [](std::uint8_t byte) {return byte == 0U;}))
+    {
+      return {DecodeStatus::kInvalidPayload, std::nullopt};
+    }
+    return {DecodeStatus::kSuccess, WriteAcknowledgement{index, frame.data[3]}};
+  }
+  if (frame.data[0] == 0x80U) {
+    const auto code = static_cast<std::uint32_t>(frame.data[4]) |
+      (static_cast<std::uint32_t>(frame.data[5]) << 8U) |
+      (static_cast<std::uint32_t>(frame.data[6]) << 16U) |
+      (static_cast<std::uint32_t>(frame.data[7]) << 24U);
+    return {DecodeStatus::kSuccess, AbortReply{index, frame.data[3], code}};
+  }
   if (frame.data[0] == 0x43U && frame.data[1] == 0x6CU && frame.data[2] == 0x60U) {
     return {
       DecodeStatus::kSuccess,
@@ -84,6 +105,9 @@ DecodeResult decode_reply(const CanFrame & frame, double rpm_resolution)
   }
   if (identifier.empty()) {
     return {DecodeStatus::kInvalidPayload, std::nullopt};
+  }
+  if (!firmware_request_pending) {
+    return {DecodeStatus::kUnexpectedReply, std::nullopt};
   }
   return {DecodeStatus::kSuccess, FirmwareReply{identifier}};
 }
@@ -209,7 +233,8 @@ CanFrame MotorCanProtocol::encode_encoder_deltas_request()
   return make_frame({0x43U, 0x64U, 0x60U, kMotorBoth, 0U, 0U, 0U, 0U});
 }
 
-DecodeResult MotorCanProtocol::decode(const CanFrame & frame, double rpm_resolution)
+DecodeResult MotorCanProtocol::decode(
+  const CanFrame & frame, double rpm_resolution, bool firmware_request_pending)
 {
   if (!is_valid_rpm_resolution(rpm_resolution)) {
     return {DecodeStatus::kInvalidPayload, std::nullopt};
@@ -222,7 +247,7 @@ DecodeResult MotorCanProtocol::decode(const CanFrame & frame, double rpm_resolut
   }
 
   if (frame.id == kReplyId) {
-    return decode_reply(frame, rpm_resolution);
+    return decode_reply(frame, rpm_resolution, firmware_request_pending);
   }
   if (frame.id == kEncoderReportId) {
     return {
@@ -246,6 +271,40 @@ DecodeResult MotorCanProtocol::decode(const CanFrame & frame, double rpm_resolut
   return {
     DecodeStatus::kSuccess,
     MotorFaultReport{static_cast<MotorSelector>(frame.data[0]), fault_mask}};
+}
+
+const char * MotorCanProtocol::decode_status_name(DecodeStatus status)
+{
+  switch (status) {
+    case DecodeStatus::kSuccess:
+      return "success";
+    case DecodeStatus::kUnsupportedId:
+      return "unsupported CAN ID";
+    case DecodeStatus::kInvalidLength:
+      return "expected eight-byte payload";
+    case DecodeStatus::kInvalidPayload:
+      return "invalid or unsupported payload";
+    case DecodeStatus::kUnexpectedReply:
+      return "unsolicited firmware/text reply";
+    default:
+      return "unknown decode status";
+  }
+}
+
+std::string MotorCanProtocol::format_frame(const CanFrame & frame)
+{
+  std::ostringstream stream;
+  stream << "id=0x" << std::hex << std::uppercase << std::setfill('0') <<
+    std::setw(3) << frame.id << std::dec << " length=" <<
+    static_cast<unsigned int>(frame.length) << " data=" << std::hex;
+  const auto size = std::min(static_cast<std::size_t>(frame.length), frame.data.size());
+  for (std::size_t index = 0; index < size; ++index) {
+    if (index != 0U) {
+      stream << ' ';
+    }
+    stream << std::setw(2) << static_cast<unsigned int>(frame.data[index]);
+  }
+  return stream.str();
 }
 
 bool MotorCanProtocol::is_valid_rpm_resolution(double rpm_resolution)

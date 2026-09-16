@@ -72,7 +72,8 @@ default 135 RPM limit and 50 ms control period match the current
 | Parameter | Default | Purpose |
 |---|---:|---|
 | `enable_can` | `false` | Enables physical SocketCAN transmission |
-| `rpm_resolution` | `1.0` | Startup-only CAN speed resolution: `1.0` or `0.1` RPM per unit |
+| `rpm_resolution` | `1.0` | Startup-only command-write resolution in RPM per CAN unit |
+| `feedback_rpm_resolution` | `0.1` | Startup-only `0x606C` feedback resolution in RPM per CAN unit |
 | `can_interface` | `can0` | Linux SocketCAN network-interface name |
 | `can_receive_poll_ms` | `50` | Interval used to query wheel speeds and drain received CAN frames |
 | `feedback_timeout_ms` | `500` | Enabled-motion timeout for speed/position feedback |
@@ -87,7 +88,7 @@ With CAN enabled, the node queries both measured wheel speeds every
 `can_receive_poll_ms` (default 50 ms), including before motor enable. This supports
 controllers that only return speeds on request. The query is
 `601#436C600300000000`; the expected reply is `581#436C6003LLLLRRRR`, with
-little-endian signed 16-bit motor speeds scaled by `rpm_resolution`. Unsolicited
+little-endian signed 16-bit motor speeds scaled by `feedback_rpm_resolution`. Unsolicited
 speed reports remain supported. Only received feedback refreshes feedback
 timestamps; sending queries does not satisfy the motion-test freshness check.
 
@@ -117,25 +118,28 @@ source install/setup.bash
 ros2 launch motor_control_g4dual motor_control.launch.py
 ```
 
-Select the CAN RPM resolution at launch (default: `1.0`):
+Command and feedback resolution are configured independently because the
+third-party controller accepts whole-RPM command units but reports `0x606C`
+in tenths of an RPM. Their defaults are command `1.0` and feedback `0.1`:
 
 ```bash
-ros2 launch motor_control_g4dual motor_control.launch.py rpm_resolution:=1
-ros2 launch motor_control_g4dual motor_control.launch.py rpm_resolution:=0.1
+ros2 launch motor_control_g4dual motor_control.launch.py \
+  rpm_resolution:=1.0 feedback_rpm_resolution:=0.1
 ```
 
 For direct execution, use a floating-point ROS parameter:
 
 ```bash
-ros2 run motor_control_g4dual motor_control_node --ros-args -p rpm_resolution:=1.0
+ros2 run motor_control_g4dual motor_control_node --ros-args \
+  -p rpm_resolution:=1.0 -p feedback_rpm_resolution:=0.1
 ```
 
-The setting must match the controller firmware. It applies to speed command
-encoding and speed feedback decoding: 12 RPM is encoded as 12 at resolution
-`1.0`, or 120 at resolution `0.1`. Commands round to the nearest CAN unit;
-ROS topics still use physical RPM and the speed limit remains 135 RPM.
-Other values are rejected. Restart the node to change the resolution.
-The launch argument overrides the value in the YAML configuration.
+Each setting must match its corresponding controller interface. With the
+defaults, a 12 RPM command is encoded as 12, while raw feedback 120 is decoded
+as 12 RPM. Commands round to the nearest CAN unit; ROS topics still use
+physical RPM and the speed limit remains 135 RPM. Other values are rejected.
+Restart the node to change either resolution. Launch arguments override the
+values in the YAML configuration.
 
 At startup, the node always logs the build host's local timestamp, including
 its numeric timezone offset, captured when the package was configured and
@@ -475,14 +479,12 @@ decoded before text. Protocol-library callers must explicitly pass `true` as
 the third `decode` argument while their own firmware query is pending.
 
 Diagnostics include `firmware_query_state`, `firmware_identifier`,
-`firmware_identity_matches`, and the configured `rpm_resolution`. The current
-firmware identifier (`primax` in the local source) does not identify a build or
-report RPM scaling. Therefore `rpm_resolution_verified` remains `false`, even
-when the identifier matches. A mismatch or failed query does not gate motion.
-The current deployment of this project uses `1.0 RPM/unit`, as confirmed by the
-operator. YAML, launch and protocol defaults are aligned to `1.0`. This setting
-is specific to motorContol_g4dual; other projects and firmware are unchanged.
-The identifier alone still cannot verify scaling automatically.
+`firmware_identity_matches`, `rpm_resolution`, and `feedback_rpm_resolution`.
+The current controller does not report its scaling, so
+`rpm_resolution_verified` remains `false`, even when its identifier matches. A
+mismatch or failed query does not gate motion. The deployed third-party
+controller uses `1.0 RPM/unit` for command writes and `0.1 RPM/unit` for
+`0x606C` feedback; YAML and launch defaults reflect that measured behavior.
 
 Rejected-frame warnings include ID, length, bytes, and a readable reason, and
 are throttled to once per second. Diagnostics retain `rejected_frame_count`,

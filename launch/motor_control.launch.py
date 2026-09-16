@@ -31,7 +31,13 @@ def generate_launch_description():
                 "rpm_resolution",
                 default_value="1.0",
                 choices=["1", "1.0", "0.1"],
-                description="RPM per CAN speed unit; must match controller firmware",
+                description="RPM per CAN command unit",
+            ),
+            DeclareLaunchArgument(
+                "feedback_rpm_resolution",
+                default_value="0.1",
+                choices=["1", "1.0", "0.1"],
+                description="RPM per CAN speed-feedback unit",
             ),
             Node(
                 package="motor_control_g4dual",
@@ -42,6 +48,9 @@ def generate_launch_description():
                     str(parameters),
                     {"rpm_resolution": ParameterValue(
                         LaunchConfiguration("rpm_resolution"), value_type=float
+                    )},
+                    {"feedback_rpm_resolution": ParameterValue(
+                        LaunchConfiguration("feedback_rpm_resolution"), value_type=float
                     )},
                 ],
                 arguments=["--info", LaunchConfiguration("info")],

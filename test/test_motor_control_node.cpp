@@ -182,6 +182,8 @@ TEST_F(MotorControlTopicsTest, DiagnosticsKeepUnknownFirmwareAndScaleExplicit)
   EXPECT_EQ(values_["firmware_identifier"], "unknown");
   EXPECT_EQ(values_["firmware_identity_matches"], "unknown");
   EXPECT_EQ(values_["rpm_resolution_verified"], "false");
+  EXPECT_EQ(values_["rpm_resolution"], "1.000000");
+  EXPECT_EQ(values_["feedback_rpm_resolution"], "0.100000");
   EXPECT_EQ(values_["last_control_reply_state"], "unavailable");
   EXPECT_EQ(values_["rejected_frame_count"], "0");
   EXPECT_EQ(values_["acknowledgement_count"], "0");
@@ -367,8 +369,8 @@ TEST_F(MotorControlTopicsTest, PollsWheelSpeedsBeforeEnableAndRequiresReplies)
     "/wheel_poll_test/wheel_speed_feedback", 10,
     [&](const std_msgs::msg::Float64MultiArray::SharedPtr message) {
       ASSERT_EQ(message->data.size(), 2U);
-      EXPECT_DOUBLE_EQ(message->data[0], 0.0);
-      EXPECT_DOUBLE_EQ(message->data[1], 0.0);
+      EXPECT_DOUBLE_EQ(message->data[0], 11.0);
+      EXPECT_DOUBLE_EQ(message->data[1], 11.0);
       ++speed_messages;
     });
   int queries = 0;
@@ -386,6 +388,12 @@ TEST_F(MotorControlTopicsTest, PollsWheelSpeedsBeforeEnableAndRequiresReplies)
         ++queries;
         if (reply_enabled) {
           frame.can_id = 0x581U;
+          // The third-party controller reports 0x606C in 0.1 RPM units.
+          // Raw +110/-110 becomes +11/+11 wheel RPM after right inversion.
+          frame.data[4] = 0x6EU;
+          frame.data[5] = 0x00U;
+          frame.data[6] = 0x92U;
+          frame.data[7] = 0xFFU;
           EXPECT_EQ(::write(peer, &frame, sizeof(frame)), static_cast<ssize_t>(sizeof(frame)));
         }
       }

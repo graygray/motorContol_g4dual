@@ -135,7 +135,8 @@ void MotorControlNode::motion_test_command(const std_msgs::msg::String::SharedPt
       "; linear_speed_mps=" << c.linear_speed << "; angular_speed_radps=" << c.angular_speed <<
       "; linear_accel_mps2=" << c.linear_accel << "; angular_accel_radps2=" << c.angular_accel <<
       "; wheel_radius_m=" << wheel_radius_m_ << "; wheel_separation_m=" << wheel_separation_m_ <<
-      "; gear_ratio=" << gear_ratio_ << "; rpm_resolution=" << rpm_resolution_ << '\n';
+      "; gear_ratio=" << gear_ratio_ << "; rpm_resolution=" << rpm_resolution_ <<
+      "; feedback_rpm_resolution=" << feedback_rpm_resolution_ << '\n';
     motion_test_log_ << "elapsed_s,state,segment,progress,last_stopped_segment_progress,"
       "relative_x_m,relative_y_m,"
       "relative_yaw_rad,linear_command_mps,angular_command_radps,left_target_rpm,"

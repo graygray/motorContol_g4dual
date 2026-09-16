@@ -21,7 +21,8 @@ motor_control:
     wheel_separation_m: 0.4762
     gear_ratio: 1.0
     max_motor_speed_rpm: 135.0
-    rpm_resolution: 1.0  # RPM per CAN unit: 1.0 or 0.1; match controller firmware
+    rpm_resolution: 1.0  # Command writes: third-party controller uses whole RPM units
+    feedback_rpm_resolution: 0.1  # 0x606C feedback is reported in tenths of an RPM
     invert_left_motor: false
     invert_right_motor: true
     command_timeout_ms: 500

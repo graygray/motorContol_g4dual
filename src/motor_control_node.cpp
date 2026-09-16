@@ -76,12 +76,20 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool inf
 
   rcl_interfaces::msg::ParameterDescriptor rpm_resolution_descriptor;
   rpm_resolution_descriptor.description =
-    "CAN speed resolution in RPM per unit: 1.0 or 0.1; must match controller firmware";
+    "CAN command resolution in RPM per unit: 1.0 or 0.1; must match controller firmware";
   rpm_resolution_descriptor.read_only = true;
   rpm_resolution_ = declare_parameter<double>(
     "rpm_resolution", MotorCanProtocol::kDefaultRpmResolution, rpm_resolution_descriptor);
   if (!MotorCanProtocol::is_valid_rpm_resolution(rpm_resolution_)) {
     throw std::invalid_argument("rpm_resolution must be 1.0 or 0.1 RPM per CAN unit");
+  }
+  rpm_resolution_descriptor.description =
+    "CAN feedback resolution in RPM per unit: 1.0 or 0.1; may differ from command writes";
+  feedback_rpm_resolution_ = declare_parameter<double>(
+    "feedback_rpm_resolution", 0.1, rpm_resolution_descriptor);
+  if (!MotorCanProtocol::is_valid_rpm_resolution(feedback_rpm_resolution_)) {
+    throw std::invalid_argument(
+      "feedback_rpm_resolution must be 1.0 or 0.1 RPM per CAN unit");
   }
 
   rcl_interfaces::msg::ParameterDescriptor startup_descriptor;
@@ -191,16 +199,19 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool inf
       RCLCPP_WARN(get_logger(), "Firmware query transmission failed: %s", error_message.c_str());
     }
     RCLCPP_INFO(
-      get_logger(), "Configured CAN speed resolution: %.1f RPM/unit (not verified by firmware)",
-      rpm_resolution_);
+      get_logger(),
+      "Configured CAN speed resolution: command=%.1f, feedback=%.1f RPM/unit "
+      "(not verified by firmware)",
+      rpm_resolution_, feedback_rpm_resolution_);
   }
 
   if (get_parameter("info").as_bool()) {
     RCLCPP_INFO(
       get_logger(),
-      "Node ready: cmd='%s', rpm='%s', CAN=%s, control=%d ms, watchdog=%d ms, RPM resolution=%.1f",
+      "Node ready: cmd='%s', rpm='%s', CAN=%s, control=%d ms, watchdog=%d ms, "
+      "RPM resolution: command=%.1f, feedback=%.1f",
       command_topic_.c_str(), motor_rpm_topic_.c_str(), enable_can_ ? "enabled" : "disabled",
-      control_period_ms, command_timeout_ms, rpm_resolution_);
+      control_period_ms, command_timeout_ms, rpm_resolution_, feedback_rpm_resolution_);
   }
 }
 
@@ -357,7 +368,7 @@ void MotorControlNode::receive_can_frames()
 
     check_reply_timeouts();
     const auto decoded = MotorCanProtocol::decode(
-      frame, rpm_resolution_, firmware_query_state_ == "pending");
+      frame, feedback_rpm_resolution_, firmware_query_state_ == "pending");
     if (!decoded) {
       ++rejected_frame_count_;
       last_rejected_frame_ = MotorCanProtocol::format_frame(frame);
@@ -905,6 +916,7 @@ void MotorControlNode::publish_diagnostics()
         std::chrono::steady_clock::now() - last_command_time_).count()) : "never");
   add_value("can_interface", can_interface_);
   add_value("rpm_resolution", std::to_string(rpm_resolution_));
+  add_value("feedback_rpm_resolution", std::to_string(feedback_rpm_resolution_));
   add_value("can_enabled", enable_can_ ? "true" : "false");
   add_value("motion_commands_enabled", motion_commands_enabled_ ? "true" : "false");
   add_value("feedback_received", feedback_received_ ? "true" : "false");

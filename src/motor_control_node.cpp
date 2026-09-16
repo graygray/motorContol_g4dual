@@ -14,6 +14,10 @@
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "motor_control_g4dual/motor_can_protocol.hpp"
 
+#ifndef MOTOR_CONTROL_BUILD_DATETIME_LOCAL
+#define MOTOR_CONTROL_BUILD_DATETIME_LOCAL "unknown"
+#endif
+
 namespace motor_control_g4dual
 {
 namespace
@@ -49,6 +53,10 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool inf
   last_command_time_(std::chrono::steady_clock::now()),
   last_feedback_time_(std::chrono::steady_clock::now())
 {
+  RCLCPP_INFO(
+    get_logger(), "Motor-control build timestamp (local): %s",
+    MOTOR_CONTROL_BUILD_DATETIME_LOCAL);
+
   declare_parameter<bool>("info", info_enabled);
   command_topic_ = declare_parameter<std::string>("command_topic", "cmd_vel");
   motor_rpm_topic_ = declare_parameter<std::string>("motor_rpm_topic", "motor_rpm_command");

@@ -137,6 +137,14 @@ ROS topics still use physical RPM and the speed limit remains 135 RPM.
 Other values are rejected. Restart the node to change the resolution.
 The launch argument overrides the value in the YAML configuration.
 
+At startup, the node always logs the build host's local timestamp, including
+its numeric timezone offset, captured when the package was configured and
+built. Use it to confirm which binary is installed on a target, for example:
+
+```text
+[INFO] [...] [motor_control]: Motor-control build timestamp (local): 2026-09-16T18:20:30+0800
+```
+
 Informational event logging defaults to `false`. Warnings and errors are always
 submitted to the ROS logger, independently of `info`. Normal ROS severity
 filtering still applies. Enable informational events at startup with:

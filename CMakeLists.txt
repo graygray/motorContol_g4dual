@@ -4,6 +4,15 @@
 cmake_minimum_required(VERSION 3.8)
 project(motor_control_g4dual)
 
+# Record the actual configure/package-build time in the build host's local
+# timezone so deployed binaries can be identified from their startup log. Use
+# the host clock rather than SOURCE_DATE_EPOCH because this value is diagnostic.
+execute_process(
+  COMMAND date "+%Y-%m-%dT%H:%M:%S%z"
+  OUTPUT_VARIABLE MOTOR_CONTROL_BUILD_DATETIME_LOCAL
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -52,6 +61,9 @@ add_executable(motor_control_node
   src/main.cpp
 )
 target_compile_features(motor_control_node PUBLIC cxx_std_17)
+target_compile_definitions(motor_control_node PRIVATE
+  MOTOR_CONTROL_BUILD_DATETIME_LOCAL="${MOTOR_CONTROL_BUILD_DATETIME_LOCAL}"
+)
 target_include_directories(motor_control_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -124,6 +136,9 @@ if(BUILD_TESTING)
     TIMEOUT 60
   )
   target_compile_features(test_motor_control_node PUBLIC cxx_std_17)
+  target_compile_definitions(test_motor_control_node PRIVATE
+    MOTOR_CONTROL_BUILD_DATETIME_LOCAL="${MOTOR_CONTROL_BUILD_DATETIME_LOCAL}"
+  )
   target_link_libraries(test_motor_control_node
     differential_drive_kinematics
     motor_can_protocol

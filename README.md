@@ -141,9 +141,10 @@ physical RPM and the speed limit remains 135 RPM. Other values are rejected.
 Restart the node to change either resolution. Launch arguments override the
 values in the YAML configuration.
 
-At startup, the node always logs the build host's local timestamp, including
-its numeric timezone offset, captured when the package was configured and
-built. Use it to confirm which binary is installed on a target, for example:
+At startup, the node converts the captured build instant to the target's local
+timezone and logs it with the numeric timezone offset. This avoids inheriting
+the BitBake build environment's UTC timezone and confirms which binary is
+installed on a target, for example:
 
 ```text
 [INFO] [...] [motor_control]: Motor-control build timestamp (local): 2026-09-16T18:20:30+0800

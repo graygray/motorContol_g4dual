@@ -4,14 +4,17 @@
 cmake_minimum_required(VERSION 3.8)
 project(motor_control_g4dual)
 
-# Record the actual configure/package-build time in the build host's local
-# timezone so deployed binaries can be identified from their startup log. Use
-# the host clock rather than SOURCE_DATE_EPOCH because this value is diagnostic.
+# Record the actual configure/package-build instant. The node converts this
+# epoch value to the target's local timezone when it starts, avoiding the
+# BitBake host environment's UTC timezone.
 execute_process(
-  COMMAND date "+%Y-%m-%dT%H:%M:%S%z"
-  OUTPUT_VARIABLE MOTOR_CONTROL_BUILD_DATETIME_LOCAL
+  COMMAND date "+%s"
+  OUTPUT_VARIABLE MOTOR_CONTROL_BUILD_EPOCH
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
+if(NOT MOTOR_CONTROL_BUILD_EPOCH MATCHES "^[0-9]+$")
+  set(MOTOR_CONTROL_BUILD_EPOCH 0)
+endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -62,7 +65,7 @@ add_executable(motor_control_node
 )
 target_compile_features(motor_control_node PUBLIC cxx_std_17)
 target_compile_definitions(motor_control_node PRIVATE
-  MOTOR_CONTROL_BUILD_DATETIME_LOCAL="${MOTOR_CONTROL_BUILD_DATETIME_LOCAL}"
+  MOTOR_CONTROL_BUILD_EPOCH=${MOTOR_CONTROL_BUILD_EPOCH}
 )
 target_include_directories(motor_control_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -137,7 +140,7 @@ if(BUILD_TESTING)
   )
   target_compile_features(test_motor_control_node PUBLIC cxx_std_17)
   target_compile_definitions(test_motor_control_node PRIVATE
-    MOTOR_CONTROL_BUILD_DATETIME_LOCAL="${MOTOR_CONTROL_BUILD_DATETIME_LOCAL}"
+    MOTOR_CONTROL_BUILD_EPOCH=${MOTOR_CONTROL_BUILD_EPOCH}
   )
   target_link_libraries(test_motor_control_node
     differential_drive_kinematics

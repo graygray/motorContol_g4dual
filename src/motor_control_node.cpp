@@ -4,6 +4,7 @@
 #include "motor_control_g4dual/motor_control_node.hpp"
 
 #include <cmath>
+#include <ctime>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -14,8 +15,8 @@
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "motor_control_g4dual/motor_can_protocol.hpp"
 
-#ifndef MOTOR_CONTROL_BUILD_DATETIME_LOCAL
-#define MOTOR_CONTROL_BUILD_DATETIME_LOCAL "unknown"
+#ifndef MOTOR_CONTROL_BUILD_EPOCH
+#define MOTOR_CONTROL_BUILD_EPOCH 0
 #endif
 
 namespace motor_control_g4dual
@@ -24,6 +25,23 @@ namespace
 {
 constexpr double kSecondsPerMinute = 60.0;
 constexpr double kTwoPi = 6.28318530717958647692;
+
+std::string build_timestamp_local()
+{
+  if (MOTOR_CONTROL_BUILD_EPOCH <= 0) {
+    return "unknown";
+  }
+  const std::time_t build_time = static_cast<std::time_t>(MOTOR_CONTROL_BUILD_EPOCH);
+  std::tm local_time{};
+  if (localtime_r(&build_time, &local_time) == nullptr) {
+    return "unknown";
+  }
+  char timestamp[32]{};
+  if (std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S%z", &local_time) == 0U) {
+    return "unknown";
+  }
+  return timestamp;
+}
 
 const char * control_command_name(ControlCommand command)
 {
@@ -53,9 +71,10 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool inf
   last_command_time_(std::chrono::steady_clock::now()),
   last_feedback_time_(std::chrono::steady_clock::now())
 {
+  const auto build_timestamp = build_timestamp_local();
   RCLCPP_INFO(
     get_logger(), "Motor-control build timestamp (local): %s",
-    MOTOR_CONTROL_BUILD_DATETIME_LOCAL);
+    build_timestamp.c_str());
 
   declare_parameter<bool>("info", info_enabled);
   command_topic_ = declare_parameter<std::string>("command_topic", "cmd_vel");

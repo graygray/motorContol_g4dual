@@ -250,6 +250,29 @@ TEST(MotorCanProtocol, DecodesEncoderAndFaultReports)
   EXPECT_EQ(fault_value.fault_mask, 0x0040U);
 }
 
+TEST(MotorCanProtocol, DecodesAmrControlG2EncoderDeltas)
+{
+  const auto deltas = MotorCanProtocol::decode(
+    {MotorCanProtocol::kAmrTelemetryId, 8U,
+      {0x01U, 0x06U, 0x12U, 0x34U, 0xEDU, 0xCCU, 0U, 0U}});
+  ASSERT_TRUE(deltas);
+  const auto values = std::get<AmrEncoderDeltasReport>(*deltas.message);
+  EXPECT_EQ(values.left_delta, 0x1234);
+  EXPECT_EQ(values.right_delta, -0x1234);
+
+  const auto unrelated_telemetry = MotorCanProtocol::decode(
+    {MotorCanProtocol::kAmrTelemetryId, 8U,
+      {0x01U, 0x03U, 0U, 0U, 0U, 0U, 0U, 0U}});
+  EXPECT_EQ(unrelated_telemetry.status, DecodeStatus::kIgnoredMessage);
+  EXPECT_FALSE(unrelated_telemetry.message);
+
+  EXPECT_EQ(
+    MotorCanProtocol::decode(
+      {MotorCanProtocol::kAmrTelemetryId, 8U,
+        {0x01U, 0x06U, 0U, 1U, 0U, 2U, 0U, 1U}}).status,
+    DecodeStatus::kInvalidPayload);
+}
+
 TEST(MotorCanProtocol, RejectsMalformedFrames)
 {
   EXPECT_EQ(

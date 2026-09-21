@@ -52,6 +52,8 @@ private:
   void latch_safety_stop(const char * reason);
   void publish_wheel_speeds(const WheelSpeedsReply & reply, const rclcpp::Time & stamp);
   void publish_encoder_deltas(const EncoderDeltasReply & reply);
+  void publish_amr_encoder_deltas(const AmrEncoderDeltasReport & report);
+  void publish_encoder_accumulated(const EncoderPositionReport & report);
   void update_encoder_odometry(
     const EncoderPositionReport & report, const rclcpp::Time & stamp);
   void publish_motor_fault(const MotorFaultReport & report);
@@ -126,6 +128,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr motor_rpm_publisher_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr wheel_speed_publisher_;
   rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr encoder_delta_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr encoder_accumulated_publisher_;
   rclcpp::Publisher<std_msgs::msg::UInt32MultiArray>::SharedPtr motor_fault_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_publisher_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odometry_publisher_;

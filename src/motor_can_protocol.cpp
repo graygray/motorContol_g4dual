@@ -42,6 +42,18 @@ std::int16_t read_int16_little_endian(
   return static_cast<std::int16_t>(static_cast<std::int32_t>(value) - 0x10000);
 }
 
+std::int16_t read_int16_big_endian(
+  const std::array<std::uint8_t, 8U> & data, std::size_t offset)
+{
+  const auto value = static_cast<std::uint16_t>(
+    (static_cast<std::uint16_t>(data[offset]) << 8U) |
+    static_cast<std::uint16_t>(data[offset + 1U]));
+  if (value <= static_cast<std::uint16_t>(std::numeric_limits<std::int16_t>::max())) {
+    return static_cast<std::int16_t>(value);
+  }
+  return static_cast<std::int16_t>(static_cast<std::int32_t>(value) - 0x10000);
+}
+
 std::int32_t read_int32_little_endian(
   const std::array<std::uint8_t, 8U> & data, std::size_t offset)
 {
@@ -239,7 +251,9 @@ DecodeResult MotorCanProtocol::decode(
   if (!is_valid_rpm_resolution(rpm_resolution)) {
     return {DecodeStatus::kInvalidPayload, std::nullopt};
   }
-  if (frame.id != kReplyId && frame.id != kEncoderReportId && frame.id != kFaultReportId) {
+  if (frame.id != kReplyId && frame.id != kEncoderReportId && frame.id != kFaultReportId &&
+    frame.id != kAmrTelemetryId)
+  {
     return {DecodeStatus::kUnsupportedId, std::nullopt};
   }
   if (frame.length != frame.data.size()) {
@@ -248,6 +262,21 @@ DecodeResult MotorCanProtocol::decode(
 
   if (frame.id == kReplyId) {
     return decode_reply(frame, rpm_resolution, firmware_request_pending);
+  }
+  if (frame.id == kAmrTelemetryId) {
+    constexpr std::uint8_t kInfoCommand = 0x01U;
+    constexpr std::uint8_t kEncoderSubcommand = 0x06U;
+    if (frame.data[0] != kInfoCommand || frame.data[1] != kEncoderSubcommand) {
+      return {DecodeStatus::kIgnoredMessage, std::nullopt};
+    }
+    if (frame.data[6] != 0U || frame.data[7] != 0U) {
+      return {DecodeStatus::kInvalidPayload, std::nullopt};
+    }
+    return {
+      DecodeStatus::kSuccess,
+      AmrEncoderDeltasReport{
+        read_int16_big_endian(frame.data, 2U),
+        read_int16_big_endian(frame.data, 4U)}};
   }
   if (frame.id == kEncoderReportId) {
     return {
@@ -286,6 +315,8 @@ const char * MotorCanProtocol::decode_status_name(DecodeStatus status)
       return "invalid or unsupported payload";
     case DecodeStatus::kUnexpectedReply:
       return "unsolicited firmware/text reply";
+    case DecodeStatus::kIgnoredMessage:
+      return "ignored telemetry message";
     default:
       return "unknown decode status";
   }

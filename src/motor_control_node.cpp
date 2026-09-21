@@ -171,6 +171,8 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool inf
     create_publisher<std_msgs::msg::Float64MultiArray>("wheel_speed_feedback", 10);
   encoder_delta_publisher_ =
     create_publisher<std_msgs::msg::Int32MultiArray>("encoder_delta_feedback", 10);
+  encoder_accumulated_publisher_ =
+    create_publisher<std_msgs::msg::Int32MultiArray>("encoder_accumulated_feedback", 10);
   motor_fault_publisher_ =
     create_publisher<std_msgs::msg::UInt32MultiArray>("motor_fault", 10);
   joint_state_publisher_ = create_publisher<sensor_msgs::msg::JointState>("joint_states", 10);
@@ -388,6 +390,9 @@ void MotorControlNode::receive_can_frames()
     check_reply_timeouts();
     const auto decoded = MotorCanProtocol::decode(
       frame, feedback_rpm_resolution_, firmware_query_state_ == "pending");
+    if (decoded.status == DecodeStatus::kIgnoredMessage) {
+      continue;
+    }
     if (!decoded) {
       ++rejected_frame_count_;
       last_rejected_frame_ = MotorCanProtocol::format_frame(frame);
@@ -458,10 +463,15 @@ void MotorControlNode::receive_can_frames()
       last_feedback_time_ = std::chrono::steady_clock::now();
       feedback_received_ = true;
       publish_encoder_deltas(*reply);
+    } else if (const auto * report = std::get_if<AmrEncoderDeltasReport>(&*decoded.message)) {
+      last_feedback_time_ = std::chrono::steady_clock::now();
+      feedback_received_ = true;
+      publish_amr_encoder_deltas(*report);
     } else if (const auto * report = std::get_if<EncoderPositionReport>(&*decoded.message)) {
       latest_encoder_positions_ = *report;
       last_feedback_time_ = std::chrono::steady_clock::now();
       feedback_received_ = true;
+      publish_encoder_accumulated(*report);
       update_encoder_odometry(*report, stamp);
     } else if (const auto * report = std::get_if<MotorFaultReport>(&*decoded.message)) {
       latest_motor_fault_ = *report;
@@ -710,6 +720,27 @@ void MotorControlNode::publish_encoder_deltas(const EncoderDeltasReply & reply)
     get_logger(), *get_clock(), 1000, "Encoder delta: left=%d, right=%d counts",
     static_cast<std::int32_t>(wheel_delta.left),
     static_cast<std::int32_t>(wheel_delta.right));
+}
+
+void MotorControlNode::publish_amr_encoder_deltas(const AmrEncoderDeltasReport & report)
+{
+  std_msgs::msg::Int32MultiArray message;
+  message.data = {report.left_delta, report.right_delta};
+  encoder_delta_publisher_->publish(std::move(message));
+  RCLCPP_DEBUG_THROTTLE(
+    get_logger(), *get_clock(), 1000, "AMR encoder delta: left=%d, right=%d counts",
+    static_cast<int>(report.left_delta), static_cast<int>(report.right_delta));
+}
+
+void MotorControlNode::publish_encoder_accumulated(const EncoderPositionReport & report)
+{
+  std_msgs::msg::Int32MultiArray message;
+  message.data = {report.m1_position, report.m2_position};
+  encoder_accumulated_publisher_->publish(std::move(message));
+  RCLCPP_DEBUG_THROTTLE(
+    get_logger(), *get_clock(), 1000,
+    "Encoder accumulated: left=%d, right=%d counts",
+    report.m1_position, report.m2_position);
 }
 
 void MotorControlNode::update_encoder_odometry(

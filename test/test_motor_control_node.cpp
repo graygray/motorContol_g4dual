@@ -4,12 +4,14 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <limits>
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #ifdef __linux__
 #include <linux/can.h>
@@ -68,6 +70,11 @@ struct MotorControlNodeTestPeer
   static double linear(const MotorControlNode & node) {return node.linear_velocity_mps_;}
   static double angular(const MotorControlNode & node) {return node.angular_velocity_radps_;}
   static const MotionTest & test(const MotorControlNode & node) {return node.motion_test_;}
+  static void publish_encoder_feedback(MotorControlNode & node)
+  {
+    node.publish_amr_encoder_deltas({123, -45});
+    node.publish_encoder_accumulated({123456, -654321});
+  }
 };
 namespace
 {
@@ -198,6 +205,31 @@ TEST_F(MotorControlTopicsTest, DiagnosticsKeepUnknownFirmwareAndScaleExplicit)
   for (const auto & result : results) {
     EXPECT_FALSE(result.successful);
   }
+}
+
+TEST_F(MotorControlTopicsTest, PublishesEncoderDeltaAndAccumulatedFeedback)
+{
+  std::vector<std::int32_t> deltas;
+  std::vector<std::int32_t> accumulated;
+  auto delta_subscription = client_->create_subscription<std_msgs::msg::Int32MultiArray>(
+    "encoder_delta_feedback", 10,
+    [&deltas](const std_msgs::msg::Int32MultiArray::SharedPtr message) {
+      deltas = message->data;
+    });
+  auto accumulated_subscription = client_->create_subscription<std_msgs::msg::Int32MultiArray>(
+    "encoder_accumulated_feedback", 10,
+    [&accumulated](const std_msgs::msg::Int32MultiArray::SharedPtr message) {
+      accumulated = message->data;
+    });
+  ASSERT_TRUE(spin_until([&]() {
+    return delta_subscription->get_publisher_count() == 1U &&
+           accumulated_subscription->get_publisher_count() == 1U;
+  }));
+
+  MotorControlNodeTestPeer::publish_encoder_feedback(*motor_);
+  ASSERT_TRUE(spin_until([&]() {return !deltas.empty() && !accumulated.empty();}));
+  EXPECT_EQ(deltas, (std::vector<std::int32_t>{123, -45}));
+  EXPECT_EQ(accumulated, (std::vector<std::int32_t>{123456, -654321}));
 }
 
 TEST_F(MotorControlTopicsTest, BuiltInTestRejectsDisabledStartAndKeepsMotionGated)

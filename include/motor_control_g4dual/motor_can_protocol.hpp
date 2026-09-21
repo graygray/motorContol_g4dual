@@ -104,6 +104,13 @@ struct EncoderDeltasReply
   std::int16_t m2_delta{0};
 };
 
+struct AmrEncoderDeltasReport
+{
+  // AMR_Control-G2 publishes wheel-oriented values on CAN 0x020 / 01 06.
+  std::int16_t left_delta{0};
+  std::int16_t right_delta{0};
+};
+
 struct EncoderPositionReport
 {
   // Quadrature-scaled wire counts; the controller reports 16,384 per revolution.
@@ -121,6 +128,7 @@ using DecodedCanMessage = std::variant<
   FirmwareReply,
   WheelSpeedsReply,
   EncoderDeltasReply,
+  AmrEncoderDeltasReport,
   EncoderPositionReport,
   MotorFaultReport,
   WriteAcknowledgement,
@@ -133,6 +141,7 @@ enum class DecodeStatus
   kInvalidLength,
   kInvalidPayload,
   kUnexpectedReply,
+  kIgnoredMessage,
 };
 
 struct DecodeResult
@@ -153,6 +162,7 @@ public:
   static constexpr std::uint16_t kReplyId = 0x581U;
   static constexpr std::uint16_t kEncoderReportId = 0x481U;
   static constexpr std::uint16_t kFaultReportId = 0x381U;
+  static constexpr std::uint16_t kAmrTelemetryId = 0x020U;
   static constexpr double kMaxSpeedRpm = 135.0;
   static constexpr double kSpeedUnitsPerRpm = 1.0;
   static constexpr double kDefaultRpmResolution = 1.0 / kSpeedUnitsPerRpm;

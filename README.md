@@ -11,7 +11,8 @@ the command payloads in `Test_H503RB/Core/Src/motor_can.c`. The encoder creates
 eight-byte standard-ID `0x601` frames. When `enable_can` is true, the node
 transmits those frames through the interface selected by `can_interface`.
 The same transport receives and decodes controller replies (`0x581`), absolute
-encoder positions (`0x481`), and motor-fault reports (`0x381`).
+encoder positions (`0x481`), motor-fault reports (`0x381`), and the
+AMR-Control-G2 encoder-delta telemetry (`0x020 / 01 06`).
 
 ## Current ROS interface
 
@@ -20,7 +21,8 @@ encoder positions (`0x481`), and motor-fault reports (`0x381`).
 | Subscribe | `cmd_vel` | `geometry_msgs/msg/Twist` | Linear-x and angular-z drive command |
 | Publish | `motor_rpm_command` | `std_msgs/msg/Float64MultiArray` | Dry-run `[left_rpm, right_rpm]` target |
 | Publish | `wheel_speed_feedback` | `std_msgs/msg/Float64MultiArray` | Measured `[left_rpm, right_rpm]` |
-| Publish | `encoder_delta_feedback` | `std_msgs/msg/Int32MultiArray` | Raw 50 ms `[left, right]` encoder deltas |
+| Publish | `encoder_delta_feedback` | `std_msgs/msg/Int32MultiArray` | Raw `[left, right]` encoder deltas from AMR-Control-G2 `0x020 / 01 06` |
+| Publish | `encoder_accumulated_feedback` | `std_msgs/msg/Int32MultiArray` | Raw accumulated `[left, right]` encoder counters from `0x481` |
 | Publish | `motor_fault` | `std_msgs/msg/UInt32MultiArray` | `[motor_selector, fault_mask]` |
 | Publish | `joint_states` | `sensor_msgs/msg/JointState` | Wheel position and angular velocity |
 | Publish | `odom` | `nav_msgs/msg/Odometry` | Differential-drive wheel odometry |
@@ -539,14 +541,15 @@ These tests never enable motors.
    parameter files, `cmd_vel` input, differential-drive conversion, RPM clamp,
    and stale-command watchdog.
 2. **CAN protocol module (complete):** encode the STM32-compatible classic CAN frames
-   (`0x601` commands; `0x581`, `0x481`, and `0x381` feedback/fault frames),
+   (`0x601` commands; `0x581`, `0x481`, `0x381`, and AMR-Control-G2 `0x020`
+   feedback/fault frames),
    including selectable signed RPM x1 or x10 encoding.
 3. **SocketCAN transmit transport (complete):** configurable interface (for
    example `can0`), strict `0x601` command-ID validation, transmit error
    reporting, and hardware-disabled startup mode.
 4. **CAN receive and decoding (complete):** filtered nonblocking reception and
    typed decoding for firmware, measured speed, encoder delta, absolute encoder
-   position, and motor-fault frames on `0x581`, `0x481`, and `0x381`.
+   position, and motor-fault frames on `0x581`, `0x481`, `0x381`, and `0x020`.
 5. **Lifecycle and safety (complete):** explicit enable/stop/reset topics,
    emergency-stop behavior, feedback timeout, command gating, fault latching,
    and safe shutdown that requests zero speed before stopping the drive.

@@ -75,6 +75,7 @@ bool SocketCanTransport::open(std::string & error_message)
     {MotorCanProtocol::kReplyId, CAN_SFF_MASK | CAN_EFF_FLAG | CAN_RTR_FLAG},
     {MotorCanProtocol::kEncoderReportId, CAN_SFF_MASK | CAN_EFF_FLAG | CAN_RTR_FLAG},
     {MotorCanProtocol::kFaultReportId, CAN_SFF_MASK | CAN_EFF_FLAG | CAN_RTR_FLAG},
+    {MotorCanProtocol::kAmrTelemetryId, CAN_SFF_MASK | CAN_EFF_FLAG | CAN_RTR_FLAG},
   };
   if (::setsockopt(
       candidate_fd, SOL_CAN_RAW, CAN_RAW_FILTER,

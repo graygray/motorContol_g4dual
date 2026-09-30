@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <fstream>
 #include <memory>
@@ -118,6 +119,8 @@ private:
   double odom_y_m_{0.0};
   double odom_yaw_rad_{0.0};
   std::unique_ptr<SocketCanTransport> can_transport_;
+  std::chrono::steady_clock::time_point last_fault_reset_time_{};
+  std::array<std::uint16_t, 4U> reported_fault_masks_{};
   bool can_link_lost_{false};
   std::chrono::steady_clock::time_point last_can_reopen_attempt_{};
   std::uint64_t can_bus_fault_count_{0U};

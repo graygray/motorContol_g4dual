@@ -515,8 +515,25 @@ void MotorControlNode::receive_can_frames()
       publish_encoder_accumulated(*report);
       update_encoder_odometry(*report, stamp);
     } else if (const auto * report = std::get_if<MotorFaultReport>(&*decoded.message)) {
+      // The controller repeats a latched fault every 100 ms until it is
+      // acknowledged. Frames arriving right after reset_faults may have been
+      // queued before the controller processed the reset; ignore those briefly.
+      // If the fault is genuinely still latched, the repeats resume afterwards.
+      constexpr auto kFaultResetIgnoreWindow = std::chrono::milliseconds(300);
+      if (std::chrono::steady_clock::now() - last_fault_reset_time_ < kFaultResetIgnoreWindow) {
+        continue;
+      }
+      // Both motors can be faulted at once and alternate on the bus, so track the
+      // last reported mask per motor (selector 1 or 2).
+      const auto motor_slot = static_cast<std::size_t>(report->motor) & 0x03U;
+      const bool is_new_report = !fault_latched_ ||
+        reported_fault_masks_[motor_slot] != report->fault_mask;
+      reported_fault_masks_[motor_slot] = report->fault_mask;
       latest_motor_fault_ = *report;
       fault_latched_ = true;
+      if (!is_new_report) {
+        continue;  // Periodic repeat of an already latched fault.
+      }
       RCLCPP_ERROR(
         get_logger(), "Motor %u reported fault mask 0x%04X",
         static_cast<unsigned int>(report->motor),
@@ -618,6 +635,8 @@ void MotorControlNode::reset_faults(const std_msgs::msg::Empty::SharedPtr messag
   fault_latched_ = false;
   feedback_timeout_latched_ = false;
   latest_motor_fault_.reset();
+  last_fault_reset_time_ = std::chrono::steady_clock::now();
+  reported_fault_masks_.fill(0U);
   last_feedback_time_ = std::chrono::steady_clock::now();
   report_control_result(
     "reset_faults", true,

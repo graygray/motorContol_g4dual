@@ -179,6 +179,8 @@ public:
   static std::optional<CanFrame> encode_jerk_limit_profile(JerkLimitProfile profile);
   static std::optional<CanFrame> encode_movement_method(MovementMethod method);
   static std::optional<CanFrame> encode_pid_set(PidSet pid_set);
+  // Manufacturer object 0x20F5: enable/disable SDO-style write acknowledgements.
+  static CanFrame encode_write_acknowledgements(bool enabled);
   static std::optional<CanFrame> encode_lower_test_case(LowerTestCase test_case);
   static std::optional<CanFrame> encode_control(ControlCommand command);
   static std::optional<CanFrame> encode_s_curve_duration(

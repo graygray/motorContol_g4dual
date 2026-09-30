@@ -60,6 +60,7 @@ private:
   void publish_motor_fault(const MotorFaultReport & report);
   void publish_diagnostics();
   void check_reply_timeouts();
+  void start_ack_handshake();
 
   void configure_motion_test();
   void motion_test_command(const std_msgs::msg::String::SharedPtr message);
@@ -152,6 +153,12 @@ private:
   std::optional<bool> last_control_success_;
   std::string last_control_message_;
   ControlReplyTracker control_replies_;
+  // 0x20F5 handshake: "disabled" (expect_control_ack=false), "pending", "enabled",
+  // "unsupported" (no reply: legacy firmware) or "rejected".
+  bool want_control_ack_{false};
+  std::string ack_handshake_state_{"disabled"};
+  std::chrono::steady_clock::time_point ack_handshake_deadline_{};
+  std::chrono::milliseconds reply_timeout_{500};
   std::string firmware_query_state_{"disabled"};
   std::string firmware_identifier_;
   std::string expected_firmware_identifier_;

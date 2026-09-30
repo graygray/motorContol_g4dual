@@ -23,6 +23,15 @@ public:
     bool enabled = false, std::chrono::milliseconds timeout = std::chrono::milliseconds(500))
   : enabled_(enabled), timeout_(timeout), state_(enabled ? "idle" : "unavailable") {}
 
+  // Enable after the controller confirmed it acknowledges writes (0x20F5 handshake).
+  void set_enabled(bool enabled)
+  {
+    enabled_ = enabled;
+    uncertain_ = false;
+    remaining_ = 0U;
+    state_ = enabled ? "idle" : "unavailable";
+  }
+
   void begin(std::size_t expected, Clock::time_point now)
   {
     if (!enabled_) {

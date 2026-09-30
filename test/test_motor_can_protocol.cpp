@@ -14,6 +14,26 @@ namespace motor_control_g4dual
 {
 namespace
 {
+TEST(MotorCanProtocol, EncodesWriteAcknowledgementSwitch)
+{
+  const auto enable = MotorCanProtocol::encode_write_acknowledgements(true);
+  EXPECT_EQ(enable.id, 0x601U);
+  EXPECT_EQ(
+    enable.data,
+    (std::array<std::uint8_t, 8U>{0x2FU, 0xF5U, 0x20U, 0x00U, 0x01U, 0U, 0U, 0U}));
+  EXPECT_EQ(MotorCanProtocol::encode_write_acknowledgements(false).data[4], 0U);
+}
+
+TEST(MotorCanProtocol, DecodesWriteAcknowledgementForAckSwitch)
+{
+  CanFrame frame{0x581U, 8U, {0x60U, 0xF5U, 0x20U, 0x00U, 0U, 0U, 0U, 0U}};
+  const auto decoded = MotorCanProtocol::decode(frame, 0.1, false);
+  ASSERT_TRUE(decoded);
+  const auto & ack = std::get<WriteAcknowledgement>(*decoded.message);
+  EXPECT_EQ(ack.index, 0x20F5U);
+  EXPECT_EQ(ack.subindex, 0U);
+}
+
 TEST(MotorCanProtocol, EncodesDualWheelSpeeds)
 {
   const auto frame = MotorCanProtocol::encode_wheel_speeds(12.3, -45.6, 0.1);

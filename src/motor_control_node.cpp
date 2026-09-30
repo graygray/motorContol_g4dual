@@ -125,8 +125,11 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool inf
   if (reply_timeout_ms <= 0) {
     throw std::invalid_argument("reply_timeout_ms must be positive");
   }
-  control_replies_ = ControlReplyTracker(
-    enable_can_ && expect_control_ack, std::chrono::milliseconds(reply_timeout_ms));
+  // The tracker stays disabled until the controller confirms it acknowledges
+  // writes (0x20F5 handshake), so legacy firmware never produces false timeouts.
+  want_control_ack_ = enable_can_ && expect_control_ack;
+  reply_timeout_ = std::chrono::milliseconds(reply_timeout_ms);
+  control_replies_ = ControlReplyTracker(false, reply_timeout_);
 
   const auto command_timeout_ms = declare_parameter<int>("command_timeout_ms", 500);
   const auto control_period_ms = declare_parameter<int>("control_period_ms", 50);
@@ -224,6 +227,9 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool inf
       "Configured CAN speed resolution: command=%.1f, feedback=%.1f RPM/unit "
       "(not verified by firmware)",
       rpm_resolution_, feedback_rpm_resolution_);
+    if (want_control_ack_) {
+      start_ack_handshake();
+    }
   }
 
   if (get_parameter("info").as_bool()) {
@@ -450,6 +456,12 @@ void MotorControlNode::receive_can_frames()
       ++acknowledgement_count_;
       last_acknowledgement_ = MotorCanProtocol::format_frame(frame);
       const auto previous_state = control_replies_.state();
+      if (reply->index == 0x20F5U && ack_handshake_state_ == "pending") {
+        ack_handshake_state_ = "enabled";
+        control_replies_.set_enabled(true);
+        RCLCPP_INFO(get_logger(), "Controller write acknowledgements enabled (0x20F5)");
+        publish_diagnostics();
+      }
       control_replies_.observe(
         reply->index, reply->subindex, false, 0U, std::chrono::steady_clock::now());
       if (previous_state != control_replies_.state()) {
@@ -460,6 +472,10 @@ void MotorControlNode::receive_can_frames()
       last_abort_reply_ = MotorCanProtocol::format_frame(frame);
       const auto previous_control_state = control_replies_.state();
       const auto previous_firmware_state = firmware_query_state_;
+      if (reply->index == 0x20F5U && ack_handshake_state_ == "pending") {
+        ack_handshake_state_ = "rejected";
+        RCLCPP_WARN(get_logger(), "Controller rejected write acknowledgements (0x20F5)");
+      }
       control_replies_.observe(
         reply->index, reply->subindex, true, reply->code, std::chrono::steady_clock::now());
       if (reply->index == 0x2031U && reply->subindex == 0U &&
@@ -569,6 +585,17 @@ void MotorControlNode::enable_motors(const std_msgs::msg::Empty::SharedPtr messa
   }
 
   std::string error_message;
+  if (want_control_ack_) {
+    // Re-arm acknowledgements every time: the controller forgets the setting on
+    // reset, and legacy firmware gets another chance to answer.
+    if (ack_handshake_state_ == "enabled") {
+      std::string ignored_error;
+      can_transport_->send_command(
+        MotorCanProtocol::encode_write_acknowledgements(true), ignored_error);
+    } else {
+      start_ack_handshake();
+    }
+  }
   control_replies_.begin(3U, std::chrono::steady_clock::now());
   const ControlCommand sequence[] = {
     ControlCommand::kEnableStage1,
@@ -933,10 +960,33 @@ void MotorControlNode::publish_motor_fault(const MotorFaultReport & report)
   }
 }
 
+void MotorControlNode::start_ack_handshake()
+{
+  std::string error_message;
+  if (!can_transport_->send_command(
+      MotorCanProtocol::encode_write_acknowledgements(true), error_message))
+  {
+    ack_handshake_state_ = "transmission_failed";
+    RCLCPP_WARN(
+      get_logger(), "Write-acknowledgement handshake transmission failed: %s",
+      error_message.c_str());
+    return;
+  }
+  ack_handshake_state_ = "pending";
+  ack_handshake_deadline_ = std::chrono::steady_clock::now() + reply_timeout_;
+}
+
 void MotorControlNode::check_reply_timeouts()
 {
   const auto current = std::chrono::steady_clock::now();
   control_replies_.expire(current);
+  if (ack_handshake_state_ == "pending" && current >= ack_handshake_deadline_) {
+    ack_handshake_state_ = "unsupported";
+    RCLCPP_WARN(
+      get_logger(),
+      "No reply to the write-acknowledgement handshake (0x20F5); assuming legacy "
+      "firmware without acknowledgements. Control replies will not be tracked.");
+  }
   if (firmware_query_state_ == "pending" && current >= firmware_deadline_) {
     firmware_query_state_ = "timed_out";
     RCLCPP_WARN(get_logger(), "Firmware query timed out; controller identity remains unknown");
@@ -1003,6 +1053,7 @@ void MotorControlNode::publish_diagnostics()
   add_value("last_control_reply_state", reply_state);
   add_value("control_replies_remaining", std::to_string(control_replies_.remaining()));
   add_value("control_abort_code", std::to_string(control_replies_.abort_code()));
+  add_value("ack_handshake_state", ack_handshake_state_);
   add_value("firmware_query_state", firmware_query_state_);
   add_value("firmware_identifier", firmware_identifier_.empty() ? "unknown" : firmware_identifier_);
   add_value("expected_firmware_identifier", expected_firmware_identifier_);

@@ -185,6 +185,11 @@ std::optional<CanFrame> MotorCanProtocol::encode_pid_set(PidSet pid_set)
   return make_frame({0x2FU, 0xF4U, 0x20U, 0x00U, to_byte(pid_set), 0U, 0U, 0U});
 }
 
+CanFrame MotorCanProtocol::encode_write_acknowledgements(bool enabled)
+{
+  return make_frame({0x2FU, 0xF5U, 0x20U, 0x00U, static_cast<std::uint8_t>(enabled ? 0x01U : 0x00U), 0U, 0U, 0U});
+}
+
 std::optional<CanFrame> MotorCanProtocol::encode_lower_test_case(LowerTestCase test_case)
 {
   if (test_case != LowerTestCase::kPid && test_case != LowerTestCase::kEncoderPush) {

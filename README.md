@@ -80,7 +80,7 @@ default 135 RPM limit and 50 ms control period match the current
 | `can_receive_poll_ms` | `50` | Interval used to query wheel speeds and drain received CAN frames |
 | `feedback_timeout_ms` | `500` | Enabled-motion timeout for speed/position feedback |
 | `reply_timeout_ms` | `500` | Startup-only deadline for firmware and optional control replies |
-| `expect_control_ack` | `false` | Startup-only opt-in control acknowledgement diagnostics |
+| `expect_control_ack` | `false` | Startup-only opt-in control acknowledgement diagnostics. Sends a `0x20F5` handshake; tracking starts only if the controller acknowledges it (`ack_handshake_state`), so legacy firmware is unaffected |
 | `expected_firmware_identifier` | empty | Startup-only optional identity comparison; mismatch produces a warning |
 | `odom_frame_id` / `base_frame_id` | `odom` / `base_link` | Odometry frame names |
 | `left_joint_name` / `right_joint_name` | wheel joint names | Joint-state names |

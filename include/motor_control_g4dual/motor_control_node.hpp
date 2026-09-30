@@ -118,6 +118,10 @@ private:
   double odom_y_m_{0.0};
   double odom_yaw_rad_{0.0};
   std::unique_ptr<SocketCanTransport> can_transport_;
+  bool can_link_lost_{false};
+  std::chrono::steady_clock::time_point last_can_reopen_attempt_{};
+  std::uint64_t can_bus_fault_count_{0U};
+  std::uint64_t can_reopen_count_{0U};
   std::unique_ptr<DifferentialDriveKinematics> kinematics_;
   std::optional<WheelSpeedsReply> latest_wheel_speeds_;
   std::optional<EncoderDeltasReply> latest_encoder_deltas_;

@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <linux/can.h>
+#include <linux/can/error.h>
 #include <linux/can/raw.h>
 #include <net/if.h>
 #include <poll.h>
@@ -106,6 +107,46 @@ TEST(SocketCanTransport, ExchangesFramesOnVirtualCan)
   ASSERT_TRUE(decoded);
   EXPECT_DOUBLE_EQ(std::get<WheelSpeedsReply>(*decoded.message).m1_speed_rpm, 60.0);
   EXPECT_DOUBLE_EQ(std::get<WheelSpeedsReply>(*decoded.message).m2_speed_rpm, -60.0);
+}
+
+
+TEST(SocketCanTransport, ReportsBusOffErrorFrameWithoutClosingSocket)
+{
+  const char * interface_environment = std::getenv("MOTOR_CONTROL_VCAN_INTERFACE");
+  if (interface_environment == nullptr || std::strlen(interface_environment) == 0U) {
+    GTEST_SKIP() << "Set MOTOR_CONTROL_VCAN_INTERFACE to run the vcan integration test";
+  }
+  const std::string interface_name(interface_environment);
+
+  SocketCanTransport transport(interface_name);
+  std::string error_message;
+  ASSERT_TRUE(transport.open(error_message)) << error_message;
+
+  FileDescriptor peer(::socket(PF_CAN, SOCK_RAW | SOCK_CLOEXEC, CAN_RAW));
+  ASSERT_GE(peer.get(), 0);
+  sockaddr_can address{};
+  address.can_family = AF_CAN;
+  address.can_ifindex = static_cast<int>(if_nametoindex(interface_name.c_str()));
+  ASSERT_EQ(
+    ::bind(peer.get(), reinterpret_cast<const sockaddr *>(&address), sizeof(address)), 0);
+
+  can_frame fault{};
+  fault.can_id = CAN_ERR_FLAG | CAN_ERR_BUSOFF;
+  fault.can_dlc = CAN_ERR_DLC;
+  ASSERT_EQ(::write(peer.get(), &fault, sizeof(fault)), static_cast<ssize_t>(sizeof(fault)));
+
+  CanFrame frame;
+  ReceiveStatus status = ReceiveStatus::kNoData;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (status == ReceiveStatus::kNoData && std::chrono::steady_clock::now() < deadline) {
+    status = transport.receive(frame, error_message);
+    if (status == ReceiveStatus::kNoData) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+  EXPECT_EQ(status, ReceiveStatus::kBusFault);
+  EXPECT_NE(error_message.find("bus-off"), std::string::npos);
+  EXPECT_TRUE(transport.is_open());
 }
 
 }  // namespace

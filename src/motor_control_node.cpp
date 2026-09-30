@@ -360,6 +360,35 @@ void MotorControlNode::publish_motor_rpm(double left_rpm, double right_rpm)
 
 void MotorControlNode::receive_can_frames()
 {
+  // The interface can vanish at runtime (ip link down, adapter unplugged). The
+  // transport closes its socket in that case; reopen it here at a limited rate.
+  // Motion stays disabled until the operator sends enable_motors again, because
+  // the MCU watchdog may have stopped the wheels while the link was down.
+  if (!can_transport_->is_open()) {
+    constexpr auto kReopenInterval = std::chrono::seconds(1);
+    const auto now_steady = std::chrono::steady_clock::now();
+    if (!can_link_lost_) {
+      can_link_lost_ = true;
+      latch_safety_stop("CAN interface lost");
+    }
+    if (now_steady - last_can_reopen_attempt_ < kReopenInterval) {
+      return;
+    }
+    last_can_reopen_attempt_ = now_steady;
+    std::string reopen_error;
+    if (!can_transport_->open(reopen_error)) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000, "Cannot reopen SocketCAN '%s': %s",
+        can_interface_.c_str(), reopen_error.c_str());
+      return;
+    }
+    can_link_lost_ = false;
+    ++can_reopen_count_;
+    RCLCPP_WARN(
+      get_logger(), "SocketCAN '%s' reopened; publish enable_motors to resume motion",
+      can_interface_.c_str());
+  }
+
   // Some controllers only return measured speeds when queried. Poll even while
   // motion is disabled so the standstill check has feedback before test start.
   // Sending a query must not refresh feedback timestamps; only replies do that.
@@ -378,6 +407,18 @@ void MotorControlNode::receive_can_frames()
     std::string error_message;
     const auto receive_status = can_transport_->receive(frame, error_message);
     if (receive_status == ReceiveStatus::kNoData) {
+      return;
+    }
+    if (receive_status == ReceiveStatus::kBusFault) {
+      ++can_bus_fault_count_;
+      RCLCPP_ERROR(get_logger(), "%s", error_message.c_str());
+      latch_safety_stop("CAN bus fault");
+      continue;
+    }
+    if (receive_status == ReceiveStatus::kLinkDown) {
+      RCLCPP_ERROR(get_logger(), "CAN interface lost: %s", error_message.c_str());
+      // The next poll sees the closed socket and starts the reopen loop.
+      latch_safety_stop("CAN interface lost");
       return;
     }
     if (receive_status == ReceiveStatus::kError) {
@@ -965,6 +1006,9 @@ void MotorControlNode::publish_diagnostics()
       std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - last_command_time_).count()) : "never");
   add_value("can_interface", can_interface_);
+  add_value("can_bus_fault_count", std::to_string(can_bus_fault_count_));
+  add_value("can_reopen_count", std::to_string(can_reopen_count_));
+  add_value("can_link_lost", can_link_lost_ ? "true" : "false");
   add_value("rpm_resolution", std::to_string(rpm_resolution_));
   add_value("feedback_rpm_resolution", std::to_string(feedback_rpm_resolution_));
   add_value("can_enabled", enable_can_ ? "true" : "false");

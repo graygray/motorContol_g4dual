@@ -5,10 +5,12 @@
 
 #include <cerrno>
 #include <cstring>
+#include <sstream>
 #include <utility>
 
 #ifdef __linux__
 #include <linux/can.h>
+#include <linux/can/error.h>
 #include <linux/can/raw.h>
 #include <net/if.h>
 #include <sys/socket.h>
@@ -25,6 +27,30 @@ namespace
 std::string system_error(const char * operation)
 {
   return std::string(operation) + ": " + std::strerror(errno);
+}
+
+// Errors that mean the interface is gone or down (for example `ip link set can0 down`
+// or a USB adapter unplug). The socket cannot recover from these; it must be reopened.
+bool is_link_down_error(int error_number)
+{
+  return error_number == ENETDOWN || error_number == ENODEV || error_number == ENXIO;
+}
+
+std::string describe_error_frame(const can_frame & frame)
+{
+  std::string text = "SocketCAN error frame:";
+  if ((frame.can_id & CAN_ERR_BUSOFF) != 0U) {
+    text += " bus-off";
+  }
+  if ((frame.can_id & CAN_ERR_RESTARTED) != 0U) {
+    text += " controller-restarted";
+  }
+  if ((frame.can_id & CAN_ERR_CRTL) != 0U) {
+    std::ostringstream detail;
+    detail << " controller-problem(0x" << std::hex << static_cast<unsigned int>(frame.data[1]) << ")";
+    text += detail.str();
+  }
+  return text;
 }
 #endif
 }  // namespace
@@ -86,6 +112,16 @@ bool SocketCanTransport::open(std::string & error_message)
     return false;
   }
 
+  // Error frames are selected by this mask, independent of the ID filters above.
+  const can_err_mask_t error_mask = CAN_ERR_BUSOFF | CAN_ERR_RESTARTED | CAN_ERR_CRTL;
+  if (::setsockopt(
+      candidate_fd, SOL_CAN_RAW, CAN_RAW_ERR_FILTER, &error_mask, sizeof(error_mask)) < 0)
+  {
+    error_message = system_error("Cannot configure SocketCAN error filter");
+    ::close(candidate_fd);
+    return false;
+  }
+
   if (::bind(
       candidate_fd, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) < 0)
   {
@@ -123,14 +159,23 @@ ReceiveStatus SocketCanTransport::receive(CanFrame & frame, std::string & error_
     return ReceiveStatus::kNoData;
   }
   if (bytes_read < 0) {
+    const int read_errno = errno;
     error_message = system_error("SocketCAN read failed");
+    if (is_link_down_error(read_errno)) {
+      close_locked();
+      return ReceiveStatus::kLinkDown;
+    }
     return ReceiveStatus::kError;
   }
   if (bytes_read != static_cast<ssize_t>(sizeof(socket_frame))) {
     error_message = "SocketCAN read returned an incomplete frame";
     return ReceiveStatus::kError;
   }
-  if ((socket_frame.can_id & (CAN_EFF_FLAG | CAN_RTR_FLAG | CAN_ERR_FLAG)) != 0U ||
+  if ((socket_frame.can_id & CAN_ERR_FLAG) != 0U) {
+    error_message = describe_error_frame(socket_frame);
+    return ReceiveStatus::kBusFault;
+  }
+  if ((socket_frame.can_id & (CAN_EFF_FLAG | CAN_RTR_FLAG)) != 0U ||
     socket_frame.can_dlc > frame.data.size())
   {
     error_message = "SocketCAN received an unsupported frame format";
@@ -152,7 +197,11 @@ ReceiveStatus SocketCanTransport::receive(CanFrame & frame, std::string & error_
 void SocketCanTransport::close() noexcept
 {
   std::lock_guard<std::mutex> lock(mutex_);
+  close_locked();
+}
 
+void SocketCanTransport::close_locked() noexcept
+{
 #ifdef __linux__
   if (socket_fd_ >= 0) {
     ::close(socket_fd_);
@@ -201,7 +250,11 @@ bool SocketCanTransport::send_command(
   } while (bytes_written < 0 && errno == EINTR);
 
   if (bytes_written < 0) {
+    const int write_errno = errno;
     error_message = system_error("SocketCAN write failed");
+    if (is_link_down_error(write_errno)) {
+      close_locked();  // The node reopens the interface from its receive poll.
+    }
     return false;
   }
   if (bytes_written != static_cast<ssize_t>(sizeof(socket_frame))) {

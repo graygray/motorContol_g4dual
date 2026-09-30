@@ -16,6 +16,12 @@ enum class ReceiveStatus
   kFrameReceived,
   kNoData,
   kError,
+  // Kernel error frame: bus-off, controller state change or driver restart.
+  // The socket stays open; the error message describes the condition.
+  kBusFault,
+  // The network interface disappeared or went down. The transport closed its
+  // socket; call open() again once the interface is back.
+  kLinkDown,
 };
 
 class SocketCanTransport
@@ -36,6 +42,8 @@ public:
   const std::string & interface_name() const noexcept;
 
 private:
+  void close_locked() noexcept;
+
   std::string interface_name_;
   int socket_fd_{-1};
   mutable std::mutex mutex_;

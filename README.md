@@ -502,6 +502,27 @@ with their object and code and do not refresh the motor-feedback watchdog.
 Use `candump -tz can0 > /tmp/motor-can.log` during a controlled bench test to
 correlate commands with replies and confirm which firmware protocol is deployed.
 
+## CAN bring-up and recovery
+
+The node does not configure `can0`; set the bit rate (500 kbit/s for the motor
+controller) and automatic bus-off restart before starting it:
+
+```bash
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 500000 restart-ms 100
+sudo ip link set can0 up
+```
+
+For a persistent setup with systemd-networkd, use a `.network`/`.link` pair with
+`[CAN] BitRate=500000` and `RestartSec=100ms`.
+
+At runtime the node requests kernel error frames for bus-off, controller
+problems and restarts. Any of these latches a safety stop (emergency stop
+attempt, motion disabled). If the interface disappears or goes down (`ENETDOWN`,
+`ENODEV`, `ENXIO`), the socket is closed and reopened once per second. After a
+bus fault or reopen the node stays disabled: publish `enable_motors` to resume.
+Diagnostics report `can_bus_fault_count`, `can_reopen_count` and `can_link_lost`.
+
 ## Tests
 
 The normal test run covers differential-drive conversion, proportional RPM

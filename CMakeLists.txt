@@ -129,6 +129,10 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_motor_can_protocol motor_can_protocol)
 
+  ament_add_gtest(test_mcu_state_monitor test/test_mcu_state_monitor.cpp)
+  target_compile_features(test_mcu_state_monitor PUBLIC cxx_std_17)
+  target_include_directories(test_mcu_state_monitor PRIVATE include)
+
   ament_add_gtest(test_control_reply_tracker test/test_control_reply_tracker.cpp)
   target_link_libraries(test_control_reply_tracker motor_can_protocol)
 

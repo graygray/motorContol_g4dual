@@ -523,6 +523,19 @@ attempt, motion disabled). If the interface disappears or goes down (`ENETDOWN`,
 bus fault or reopen the node stays disabled: publish `enable_motors` to resume.
 Diagnostics report `can_bus_fault_count`, `can_reopen_count` and `can_link_lost`.
 
+## Motor-controller reset detection
+
+The firmware sends a status frame (`0x281`) every second, independent of any
+host enable. The node uses it to detect a controller reset: when the reported
+uptime goes backwards, or when motion is enabled for more than 2 s but the
+controller reports it is not in ROS-host mode, the node logs an error, takes a
+new odometry baseline, and latches a safety stop. Publish `enable_motors` to
+resume; that re-sends the enable sequence and the acknowledgement handshake.
+Diagnostics report `mcu_status_supported`, `mcu_status_stale`, `mcu_reset_count`,
+`mcu_reset_cause`, `mcu_uptime_s` and `mcu_status_flags`. With older firmware
+that sends no status frames the feature stays inactive (`mcu_status_supported`
+is false) and the feedback timeout remains the only detector.
+
 ## Tests
 
 The normal test run covers differential-drive conversion, proportional RPM

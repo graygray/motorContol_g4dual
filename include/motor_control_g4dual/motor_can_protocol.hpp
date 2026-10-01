@@ -124,6 +124,24 @@ struct MotorFaultReport
   std::uint16_t fault_mask{0U};
 };
 
+// Periodic controller status (CAN 0x281). Sent at 1 Hz and on flag changes, even
+// before any host enables the controller, so a host can detect an MCU reset.
+struct McuStatusReport
+{
+  static constexpr std::uint8_t kFlagRosHostMode = 0x01U;
+  static constexpr std::uint8_t kFlagSpeedWatchdog = 0x02U;
+  static constexpr std::uint8_t kFlagEmergencyStop = 0x04U;
+  static constexpr std::uint8_t kFlagCoupledFaultStop = 0x08U;
+  static constexpr std::uint8_t kFlagWriteAcks = 0x10U;
+  static constexpr std::uint8_t kFlagFaultLatched = 0x20U;
+  static constexpr std::uint8_t kFlagSpeedTimeout = 0x40U;
+
+  std::uint8_t flags{0U};
+  std::uint8_t reset_cause{0U};  // Bit mask captured at boot (see readme_canbus.md)
+  std::uint16_t error_code{0U};
+  std::uint32_t uptime_s{0U};
+};
+
 using DecodedCanMessage = std::variant<
   FirmwareReply,
   WheelSpeedsReply,
@@ -131,6 +149,7 @@ using DecodedCanMessage = std::variant<
   AmrEncoderDeltasReport,
   EncoderPositionReport,
   MotorFaultReport,
+  McuStatusReport,
   WriteAcknowledgement,
   AbortReply>;
 
@@ -162,6 +181,7 @@ public:
   static constexpr std::uint16_t kReplyId = 0x581U;
   static constexpr std::uint16_t kEncoderReportId = 0x481U;
   static constexpr std::uint16_t kFaultReportId = 0x381U;
+  static constexpr std::uint16_t kStatusReportId = 0x281U;
   static constexpr std::uint16_t kAmrTelemetryId = 0x020U;
   static constexpr double kMaxSpeedRpm = 135.0;
   static constexpr double kSpeedUnitsPerRpm = 1.0;

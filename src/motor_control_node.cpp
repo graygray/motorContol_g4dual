@@ -530,6 +530,8 @@ void MotorControlNode::receive_can_frames()
       feedback_received_ = true;
       publish_encoder_accumulated(*report);
       update_encoder_odometry(*report, stamp);
+    } else if (const auto * report = std::get_if<McuStatusReport>(&*decoded.message)) {
+      handle_mcu_status(*report);
     } else if (const auto * report = std::get_if<MotorFaultReport>(&*decoded.message)) {
       // The controller repeats a latched fault every 100 ms until it is
       // acknowledged. Frames arriving right after reset_faults may have been
@@ -626,6 +628,7 @@ void MotorControlNode::enable_motors(const std_msgs::msg::Empty::SharedPtr messa
   command_received_ = false;
   watchdog_stopped_ = false;
   motion_commands_enabled_ = true;
+  motion_enabled_time_ = std::chrono::steady_clock::now();
   report_control_result(
     "enable_motors", true,
     "Enable sequence transmitted; see last_control_reply_state for controller reply status");
@@ -960,6 +963,44 @@ void MotorControlNode::publish_motor_fault(const MotorFaultReport & report)
   }
 }
 
+void MotorControlNode::handle_mcu_status(const McuStatusReport & report)
+{
+  std::optional<std::chrono::steady_clock::time_point> enabled_since;
+  if (motion_commands_enabled_) {
+    enabled_since = motion_enabled_time_;
+  }
+  const auto event = mcu_monitor_.observe(report, std::chrono::steady_clock::now(), enabled_since);
+
+  if (event == McuStateMonitor::Event::kFirstReport) {
+    RCLCPP_INFO(
+      get_logger(), "Controller status reports detected (uptime=%u s, reset cause=0x%02X)",
+      report.uptime_s, static_cast<unsigned int>(report.reset_cause));
+    publish_diagnostics();
+    return;
+  }
+  if (event != McuStateMonitor::Event::kResetDetected &&
+    event != McuStateMonitor::Event::kStateMismatch)
+  {
+    return;
+  }
+
+  RCLCPP_ERROR(
+    get_logger(),
+    "Motor controller %s (uptime=%u s, reset cause=0x%02X, flags=0x%02X); "
+    "stopping and requiring enable_motors again",
+    event == McuStateMonitor::Event::kResetDetected ? "reset detected" :
+    "lost the host enable state",
+    report.uptime_s, static_cast<unsigned int>(report.reset_cause),
+    static_cast<unsigned int>(report.flags));
+  // The controller encoder counters restart at zero after a reset; take a new
+  // odometry baseline instead of integrating the jump.
+  encoder_initialized_ = false;
+  // Acknowledgements and the host-mode watchdog are off again after a reset.
+  // enable_motors re-arms both.
+  latch_safety_stop("motor controller reset");
+  publish_diagnostics();
+}
+
 void MotorControlNode::start_ack_handshake()
 {
   std::string error_message;
@@ -986,6 +1027,11 @@ void MotorControlNode::check_reply_timeouts()
       get_logger(),
       "No reply to the write-acknowledgement handshake (0x20F5); assuming legacy "
       "firmware without acknowledgements. Control replies will not be tracked.");
+  }
+  if (mcu_monitor_.stale(current)) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 10000,
+      "Motor-controller status reports stopped; relying on the feedback timeout");
   }
   if (firmware_query_state_ == "pending" && current >= firmware_deadline_) {
     firmware_query_state_ = "timed_out";
@@ -1054,6 +1100,15 @@ void MotorControlNode::publish_diagnostics()
   add_value("control_replies_remaining", std::to_string(control_replies_.remaining()));
   add_value("control_abort_code", std::to_string(control_replies_.abort_code()));
   add_value("ack_handshake_state", ack_handshake_state_);
+  add_value("mcu_status_supported", mcu_monitor_.supported() ? "true" : "false");
+  add_value("mcu_status_stale",
+    mcu_monitor_.stale(std::chrono::steady_clock::now()) ? "true" : "false");
+  add_value("mcu_reset_count", std::to_string(mcu_monitor_.reset_count()));
+  add_value("mcu_reset_cause",
+    std::to_string(static_cast<unsigned int>(mcu_monitor_.last_report().reset_cause)));
+  add_value("mcu_uptime_s", std::to_string(mcu_monitor_.last_report().uptime_s));
+  add_value("mcu_status_flags",
+    std::to_string(static_cast<unsigned int>(mcu_monitor_.last_report().flags)));
   add_value("firmware_query_state", firmware_query_state_);
   add_value("firmware_identifier", firmware_identifier_.empty() ? "unknown" : firmware_identifier_);
   add_value("expected_firmware_identifier", expected_firmware_identifier_);

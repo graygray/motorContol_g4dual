@@ -270,6 +270,21 @@ TEST(MotorCanProtocol, DecodesEncoderAndFaultReports)
   EXPECT_EQ(fault_value.fault_mask, 0x0040U);
 }
 
+TEST(MotorCanProtocol, DecodesMcuStatusReport)
+{
+  const auto status = MotorCanProtocol::decode(
+    {MotorCanProtocol::kStatusReportId, 8U,
+      {0x13U, 0x08U, 0x05U, 0x00U, 0x10U, 0x0EU, 0x00U, 0x00U}});
+  ASSERT_TRUE(status);
+  const auto & report = std::get<McuStatusReport>(*status.message);
+  EXPECT_EQ(report.flags, 0x13U);
+  EXPECT_NE(report.flags & McuStatusReport::kFlagRosHostMode, 0U);
+  EXPECT_NE(report.flags & McuStatusReport::kFlagWriteAcks, 0U);
+  EXPECT_EQ(report.reset_cause, 0x08U);
+  EXPECT_EQ(report.error_code, 5U);
+  EXPECT_EQ(report.uptime_s, 3600U);
+}
+
 TEST(MotorCanProtocol, DecodesAmrControlG2EncoderDeltas)
 {
   const auto deltas = MotorCanProtocol::decode(

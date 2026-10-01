@@ -257,7 +257,7 @@ DecodeResult MotorCanProtocol::decode(
     return {DecodeStatus::kInvalidPayload, std::nullopt};
   }
   if (frame.id != kReplyId && frame.id != kEncoderReportId && frame.id != kFaultReportId &&
-    frame.id != kAmrTelemetryId)
+    frame.id != kStatusReportId && frame.id != kAmrTelemetryId)
   {
     return {DecodeStatus::kUnsupportedId, std::nullopt};
   }
@@ -282,6 +282,19 @@ DecodeResult MotorCanProtocol::decode(
       AmrEncoderDeltasReport{
         read_int16_big_endian(frame.data, 2U),
         read_int16_big_endian(frame.data, 4U)}};
+  }
+  if (frame.id == kStatusReportId) {
+    const auto uptime = static_cast<std::uint32_t>(frame.data[4]) |
+      (static_cast<std::uint32_t>(frame.data[5]) << 8U) |
+      (static_cast<std::uint32_t>(frame.data[6]) << 16U) |
+      (static_cast<std::uint32_t>(frame.data[7]) << 24U);
+    return {
+      DecodeStatus::kSuccess,
+      McuStatusReport{
+        frame.data[0], frame.data[1],
+        static_cast<std::uint16_t>(
+          frame.data[2] | (static_cast<std::uint16_t>(frame.data[3]) << 8U)),
+        uptime}};
   }
   if (frame.id == kEncoderReportId) {
     return {

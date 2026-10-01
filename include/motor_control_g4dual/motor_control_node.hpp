@@ -61,6 +61,7 @@ private:
   void publish_diagnostics();
   void check_reply_timeouts();
   void start_ack_handshake();
+  void handle_mcu_status(const McuStatusReport & report);
 
   void configure_motion_test();
   void motion_test_command(const std_msgs::msg::String::SharedPtr message);
@@ -122,6 +123,8 @@ private:
   std::unique_ptr<SocketCanTransport> can_transport_;
   std::chrono::steady_clock::time_point last_fault_reset_time_{};
   std::array<std::uint16_t, 4U> reported_fault_masks_{};
+  McuStateMonitor mcu_monitor_;
+  std::chrono::steady_clock::time_point motion_enabled_time_{};
   bool can_link_lost_{false};
   std::chrono::steady_clock::time_point last_can_reopen_attempt_{};
   std::uint64_t can_bus_fault_count_{0U};

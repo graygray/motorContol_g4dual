@@ -14,6 +14,7 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "motor_control_g4dual/control_reply_tracker.hpp"
 #include "motor_control_g4dual/differential_drive_kinematics.hpp"
+#include "motor_control_g4dual/mcu_state_monitor.hpp"
 #include "motor_control_g4dual/socket_can_transport.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"

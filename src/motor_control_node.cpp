@@ -131,10 +131,10 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool inf
   reply_timeout_ = std::chrono::milliseconds(reply_timeout_ms);
   control_replies_ = ControlReplyTracker(false, reply_timeout_);
 
-  const auto command_timeout_ms = declare_parameter<int>("command_timeout_ms", 500);
-  const auto control_period_ms = declare_parameter<int>("control_period_ms", 50);
-  const auto can_receive_poll_ms = declare_parameter<int>("can_receive_poll_ms", 50);
-  const auto feedback_timeout_ms = declare_parameter<int>("feedback_timeout_ms", 500);
+  const int command_timeout_ms = declare_parameter<int>("command_timeout_ms", 500);
+  const int control_period_ms = declare_parameter<int>("control_period_ms", 50);
+  const int can_receive_poll_ms = declare_parameter<int>("can_receive_poll_ms", 50);
+  const int feedback_timeout_ms = declare_parameter<int>("feedback_timeout_ms", 500);
 
   if (wheel_radius_m_ <= 0.0 || wheel_separation_m_ <= 0.0 || gear_ratio_ <= 0.0 ||
     max_motor_speed_rpm_ <= 0.0 || command_timeout_ms <= 0 || control_period_ms <= 0 ||

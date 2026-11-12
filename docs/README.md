@@ -1,8 +1,10 @@
 # Motor test-pattern presentation
 
 - [PowerPoint slides](test_patterns.pptx) — 13 editable slides, 16:9, English.
-- [PDF slides](test_patterns.pdf) — matching vector PDF for viewing and printing.
 - [Generator](build_presentation.py) — regenerates both files from editable text and vector shapes.
+
+The generated PDF is not tracked in this repository. Run the generator below
+when a PDF copy is needed for viewing or printing.
 
 ## Contents
 

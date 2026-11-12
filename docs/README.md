@@ -16,9 +16,9 @@ repository. Path diagrams are ideal schematics, not recorded robot trajectories.
 The numerical overshoot example is illustrative. No hardware test was performed
 while creating this documentation.
 
-The current motorContol_g4dual deployment uses **1.0 RPM/unit**, confirmed by the
-operator. Its YAML, launch and protocol defaults are aligned to 1.0. The existing
-`aic mc r` helper already selects 1.0. Other projects and firmware were not changed.
+The current motorContol_g4dual deployment uses **0.1 RPM/unit** for both commands
+and feedback, confirmed by the operator. Its YAML, launch and protocol defaults
+are aligned to 0.1. Other projects and firmware were not changed.
 Test-pattern commands use the AICamera helper (`aic mc tp ...`).
 
 ## Keynote compatibility

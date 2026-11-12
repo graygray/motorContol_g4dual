@@ -184,7 +184,7 @@ public:
   static constexpr std::uint16_t kStatusReportId = 0x281U;
   static constexpr std::uint16_t kAmrTelemetryId = 0x020U;
   static constexpr double kMaxSpeedRpm = 135.0;
-  static constexpr double kSpeedUnitsPerRpm = 1.0;
+  static constexpr double kSpeedUnitsPerRpm = 10.0;
   static constexpr double kDefaultRpmResolution = 1.0 / kSpeedUnitsPerRpm;
 
   static bool is_valid_rpm_resolution(double rpm_resolution);

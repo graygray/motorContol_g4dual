@@ -132,7 +132,7 @@ text(.72,4.6,7.1,['1  Stop periodic cmd_vel publishers.',
 points([('Monitor in another terminal','aic mc tp status'),
         ('Required before starting','CAN on; motors enabled; no fault latch.'),
         ('Previous command must expire','Default cmd_vel timeout: 500 ms.')],8.2,2.3,4.4,18,.92)
-text(8.2,5.2,4.4,['RPM resolution: 1.0 RPM/unit.',
+text(8.2,5.2,4.4,['RPM resolution: 0.1 RPM/unit.',
     'Confirmed for this project.', 'YAML, launch and CLI agree.',
     'Other projects are unchanged.'],15,ORANGE)
 

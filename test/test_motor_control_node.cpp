@@ -189,7 +189,7 @@ TEST_F(MotorControlTopicsTest, DiagnosticsKeepUnknownFirmwareAndScaleExplicit)
   EXPECT_EQ(values_["firmware_identifier"], "unknown");
   EXPECT_EQ(values_["firmware_identity_matches"], "unknown");
   EXPECT_EQ(values_["rpm_resolution_verified"], "false");
-  EXPECT_EQ(values_["rpm_resolution"], "1.000000");
+  EXPECT_EQ(values_["rpm_resolution"], "0.100000");
   EXPECT_EQ(values_["feedback_rpm_resolution"], "0.100000");
   EXPECT_EQ(values_["last_control_reply_state"], "unavailable");
   EXPECT_EQ(values_["rejected_frame_count"], "0");

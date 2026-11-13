@@ -287,6 +287,33 @@ exposing motor/platform asymmetry. S has separately configurable path correction
 starting heading; reverse is measured from the actual stopped forward endpoint,
 not a navigation command back to the original pose.
 
+### Live pattern monitor
+
+This direct-ROS mode has not been verified on the robot. The intended Mac workflow
+without local ROS 2 is still [unfinished](docs/PATTERN_MONITOR_TODO.md).
+
+On a Linux computer with ROS 2 Humble, `rclpy`, a graphical display, and
+`python3-matplotlib`, start the monitor **before** publishing a pattern command:
+
+```bash
+source /opt/ros/humble/setup.bash
+python3 /path/to/motor_control_g4dual/tools/pattern_monitor.py \
+  --output ./pattern_topics.jsonl
+```
+
+The monitor discovers and subscribes to every visible topic in its namespace,
+including topics that appear after startup. It prints each subscribed topic and
+records every received message as JSONL with receive time, ROS type, and topic.
+`--namespace /robot1` restricts discovery to one robot. Close the plot or press
+Ctrl+C to stop recording. The window shows the `odom` x/y path, target and
+measured wheel RPM, reported pattern path error, current test state, diagnostics,
+and warning/fault markers. The path-error plot updates when
+`motion_test/status` is published (phase changes and completion); the node's
+own CSV has the full control-rate error series. The monitor only subscribes; it
+never sends motor commands. For late starts, the retained status can be received,
+but earlier trajectory samples cannot be recovered. The plotted trajectory is
+wheel odometry and cannot independently reveal wheel slip or ground-truth drift.
+
 ### Circle and square (version 2)
 
 The AICamera helper `/Users/test/OSPath/AICamera/x.sh` supports:

@@ -86,8 +86,8 @@ MotorControlNode::MotorControlNode(const rclcpp::NodeOptions & options, bool inf
   right_joint_name_ = declare_parameter<std::string>("right_joint_name", "right_wheel_joint");
   enable_can_ = declare_parameter<bool>("enable_can", false);
   publish_odom_tf_ = declare_parameter<bool>("publish_odom_tf", true);
-  wheel_radius_m_ = declare_parameter<double>("wheel_radius_m", 0.085);
-  wheel_separation_m_ = declare_parameter<double>("wheel_separation_m", 0.4762);
+  wheel_radius_m_ = declare_parameter<double>("wheel_radius_m", 0.0865);
+  wheel_separation_m_ = declare_parameter<double>("wheel_separation_m", 0.295);
   gear_ratio_ = declare_parameter<double>("gear_ratio", 1.0);
   max_motor_speed_rpm_ = declare_parameter<double>("max_motor_speed_rpm", 135.0);
   invert_left_motor_ = declare_parameter<bool>("invert_left_motor", false);

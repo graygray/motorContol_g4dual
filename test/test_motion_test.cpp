@@ -10,6 +10,9 @@
 
 using motor_control_g4dual::MotionTest;
 
+constexpr double kWheelRadiusM = 0.0865;
+constexpr double kWheelSeparationM = 0.295;
+
 void require(bool condition, const char * message)
 {
   if (!condition) {throw std::runtime_error(message);}
@@ -49,10 +52,10 @@ void simulate(const std::string & kind, double angle)
     sample.x += command.linear * std::cos(sample.yaw) * 0.05;
     sample.y += command.linear * std::sin(sample.yaw) * 0.05;
     sample.yaw += command.angular * 0.05;
-    sample.left_rpm = (command.linear - command.angular * 0.4762 / 2.0) * 60.0 /
-      (6.283185307179586 * 0.085);
-    sample.right_rpm = (command.linear + command.angular * 0.4762 / 2.0) * 60.0 /
-      (6.283185307179586 * 0.085);
+    sample.left_rpm = (command.linear - command.angular * kWheelSeparationM / 2.0) * 60.0 /
+      (6.283185307179586 * kWheelRadiusM);
+    sample.right_rpm = (command.linear + command.angular * kWheelSeparationM / 2.0) * 60.0 /
+      (6.283185307179586 * kWheelRadiusM);
     previous = command;
   }
   require(test.state() == "completed", "sequence must complete");
@@ -225,13 +228,13 @@ void simulate_shape(const std::string & kind, bool clockwise, double radius)
       s.y += command.linear * std::sin(s.yaw) * 0.05;
     }
     s.yaw = next_yaw;
-    s.left_rpm = (command.linear - command.angular * 0.4762 / 2.0) * 60.0 /
-      (6.283185307179586 * 0.085);
-    s.right_rpm = (command.linear + command.angular * 0.4762 / 2.0) * 60.0 /
-      (6.283185307179586 * 0.085);
+    s.left_rpm = (command.linear - command.angular * kWheelSeparationM / 2.0) * 60.0 /
+      (6.283185307179586 * kWheelRadiusM);
+    s.right_rpm = (command.linear + command.angular * kWheelSeparationM / 2.0) * 60.0 /
+      (6.283185307179586 * kWheelRadiusM);
     require(std::max(std::abs(s.left_rpm), std::abs(s.right_rpm)) <=
-      MotionTest::maximum_wheel_speed(kind, c, 0.4762) * 60.0 /
-      (6.283185307179586 * 0.085) + 1e-9, "wheel limit accounts for outer wheel");
+      MotionTest::maximum_wheel_speed(kind, c, kWheelSeparationM) * 60.0 /
+      (6.283185307179586 * kWheelRadiusM) + 1e-9, "wheel limit accounts for outer wheel");
     previous = command;
   }
   require(test.state() == "completed", "shape must complete");
@@ -263,8 +266,8 @@ void shape_guards()
     test.update(s);
     require(test.state() == "aborted", "shape feedback timeout");
   }
-  require(std::abs(MotionTest::maximum_wheel_speed("circle", c, 0.4762) - 0.12381) < 1e-9,
-    "default circle outer wheel speed is 0.12381 m/s");
+  require(std::abs(MotionTest::maximum_wheel_speed("circle", c, kWheelSeparationM) - 0.11475) <
+    1e-9, "default circle outer wheel speed is 0.11475 m/s");
   // Fresh, progressing feedback must not defeat the per-circle deadline.
   MotionTest timed;
   c.stall_timeout = 1.0;
@@ -346,13 +349,13 @@ double simulate_s(bool clockwise, bool correction, bool disturbance, int repetit
       s.yaw += 0.2;
       injected = true;
     }
-    s.left_rpm = (command.linear - command.angular * 0.4762 / 2.0) * 60.0 /
-      (6.283185307179586 * 0.085);
-    s.right_rpm = (command.linear + command.angular * 0.4762 / 2.0) * 60.0 /
-      (6.283185307179586 * 0.085);
+    s.left_rpm = (command.linear - command.angular * kWheelSeparationM / 2.0) * 60.0 /
+      (6.283185307179586 * kWheelRadiusM);
+    s.right_rpm = (command.linear + command.angular * kWheelSeparationM / 2.0) * 60.0 /
+      (6.283185307179586 * kWheelRadiusM);
     require(std::max(std::abs(s.left_rpm), std::abs(s.right_rpm)) <=
-      MotionTest::maximum_wheel_speed("s", c, 0.4762) * 60.0 /
-      (6.283185307179586 * 0.085) + 1e-9, "S outer wheel bound includes correction");
+      MotionTest::maximum_wheel_speed("s", c, kWheelSeparationM) * 60.0 /
+      (6.283185307179586 * kWheelRadiusM) + 1e-9, "S outer wheel bound includes correction");
     previous = command;
     last_progress = progress;
   }
@@ -392,7 +395,7 @@ void s_guards()
     try {MotionTest::validate(bad);} catch (const std::invalid_argument &) {rejected = true;}
     require(rejected, "S config validation");
   }
-  require(std::abs(MotionTest::maximum_wheel_speed("s", c, 0.4762) - 0.14762) < 1e-9,
+  require(std::abs(MotionTest::maximum_wheel_speed("s", c, kWheelSeparationM) - 0.1295) < 1e-9,
     "S maximum wheel speed with correction reserve");
 }
 

@@ -17,8 +17,8 @@ motor_control:
     left_joint_name: left_wheel_joint
     right_joint_name: right_wheel_joint
     publish_odom_tf: true
-    wheel_radius_m: 0.085
-    wheel_separation_m: 0.4762
+    wheel_radius_m: 0.0865  # 173 mm wheel diameter from ZLLG65ASM250 specification
+    wheel_separation_m: 0.295  # G2 WHEEL_SPACING from STM motion-control firmware
     gear_ratio: 1.0
     max_motor_speed_rpm: 135.0
     rpm_resolution: 0.1  # Command writes use tenths of an RPM
